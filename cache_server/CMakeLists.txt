@@ -10,10 +10,14 @@ set(LETHE_SRCS
   src/eviction.cpp
   src/membership.cpp
   src/metrics.cpp
+  # GrpcStreamTransport is the default bulk-KV transport and is built
+  # unconditionally; IbverbsTransport (below) is the LETHE_ENABLE_RDMA
+  # alternative.
+  src/grpc_stream_transport.cpp
 )
 
 if(LETHE_ENABLE_RDMA)
-  list(APPEND LETHE_SRCS src/rdma_transport.cpp)
+  list(APPEND LETHE_SRCS src/ibverbs_transport.cpp)
 endif()
 
 add_executable(lethe_server ${LETHE_SRCS})
