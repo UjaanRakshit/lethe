@@ -50,17 +50,18 @@ void HandleSignal(int) { g_shutdown.store(true); }
 // TODO(W3): wire Router into Lookup so RemoteHit responses include source.
 // TODO(W4): implement StreamBlocks streaming server method.
 // TODO(W8): implement Heartbeat, EvictBroadcast handlers. The Heartbeat
-// shim populates BOTH proto fields from the HeartbeatReply struct:
+// shim is a strict field-by-field copy between HeartbeatReply and the
+// proto HeartbeatResponse — no information loss in either direction:
 //
 //   ::grpc::Status Heartbeat(::grpc::ServerContext*,
 //                            const HeartbeatRequest* req,
 //                            HeartbeatResponse* resp) override {
 //     auto reply = cache_->OnHeartbeat(req->node_id(), req->epoch());
-//     for (const auto& peer_id : reply.alive_peers) {
+//     for (const auto& peer : reply.alive_peers) {
 //       auto* p = resp->add_alive_peers();
-//       p->set_node_id(peer_id);
-//       // last_seen_epoch=0, suspected=false: see types.hpp HeartbeatReply
-//       // comment for why these are not carried back from C++.
+//       p->set_node_id(peer.node_id);
+//       p->set_last_seen_epoch(peer.last_seen_epoch);
+//       p->set_suspected(peer.suspected);
 //     }
 //     resp->set_cluster_epoch(reply.cluster_epoch);
 //     return ::grpc::Status::OK;

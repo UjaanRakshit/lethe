@@ -67,21 +67,24 @@ struct KvBlock {
   std::uint64_t inserted_epoch = 0;
 };
 
+// Mirrors proto/lethe.proto `message PeerStatus`. Field-for-field, in
+// declaration order matching the proto field numbers.
+struct PeerStatus {
+  std::string node_id;            // proto field 1
+  std::uint64_t last_seen_epoch = 0;  // proto field 2
+  bool suspected = false;         // proto field 3
+};
+
 // Reply payload for a Heartbeat RPC. Mirrors proto/lethe.proto
-// HeartbeatResponse one field at a time:
+// `message HeartbeatResponse` field-for-field:
 //
 //   alive_peers   ←→  repeated PeerStatus alive_peers = 1;
 //   cluster_epoch ←→  uint64 cluster_epoch = 2;
 //
-// NOTE: the proto's `alive_peers` is `repeated PeerStatus` (each carries
-// `{node_id, last_seen_epoch, suspected}`). This C++ struct uses
-// `vector<string>` per the W0 design decision to keep the surface narrow;
-// the gRPC shim downgrades PeerStatus → node_id on the way out and re-
-// fabricates `last_seen_epoch=0, suspected=false` on the way in. If the
-// chaos suite (W11) needs the suspected bit on the client side, widen
-// this struct then — don't grow it speculatively now.
+// The gRPC shim copies fields one-to-one; no information is lost in
+// either direction.
 struct HeartbeatReply {
-  std::vector<std::string> alive_peers;
+  std::vector<PeerStatus> alive_peers;
   std::uint64_t cluster_epoch = 0;
 };
 

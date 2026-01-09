@@ -30,13 +30,28 @@ from .routing import HashRing
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class PeerStatus:
+    """Mirror of the C++ `lethe::PeerStatus` (cache_server/include/lethe/types.hpp)
+    and proto `message PeerStatus` (proto/lethe.proto). Field-for-field.
+    """
+
+    node_id: str
+    last_seen_epoch: int = 0
+    suspected: bool = False
+
+
 @dataclass
 class EpochSnapshot:
-    """One server's reported view of cluster state."""
+    """One server's reported view of cluster state. Mirror of C++
+    `HeartbeatReply` — `alive_peers` carries full PeerStatus, not bare
+    node IDs, so the client can see who the server suspects without
+    waiting for that node to be declared dead.
+    """
 
     source_peer: str
     epoch: int
-    alive_peers: list[str] = field(default_factory=list)
+    alive_peers: list[PeerStatus] = field(default_factory=list)
 
 
 # Type alias for the heartbeat probe — injected so tests can fake it
@@ -67,7 +82,12 @@ class EpochWatcher:
         self._lock = threading.Lock()
         self._ring = ring
         self._epoch = 0
-        self._alive_peers: list[str] = list(seed_peers)
+        # Seed peers don't yet have a server-reported PeerStatus, so
+        # synthesize one with sane defaults; the first successful probe
+        # replaces this list wholesale.
+        self._alive_peers: list[PeerStatus] = [
+            PeerStatus(node_id=p) for p in seed_peers
+        ]
 
         self._stop_evt = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -113,14 +133,21 @@ class EpochWatcher:
             self._stop_evt.wait(self._poll_interval)
 
     def _probe_any_peer(self) -> Optional[EpochSnapshot]:
-        # Walk the currently-known alive set first; fall back to seeds.
+        # Walk the currently-known alive (non-suspected) set first; fall
+        # back to all known peers (including suspected); then to seeds.
         with self._lock:
-            candidates = list(self._alive_peers) or list(self._seed_peers)
-        for peer in candidates:
+            known = list(self._alive_peers)
+            seeds = list(self._seed_peers)
+        candidate_ids = [p.node_id for p in known if not p.suspected]
+        if not candidate_ids:
+            candidate_ids = [p.node_id for p in known]
+        if not candidate_ids:
+            candidate_ids = seeds
+        for peer_id in candidate_ids:
             try:
-                snap = self._probe(peer)
+                snap = self._probe(peer_id)
             except Exception as e:  # noqa: BLE001 — probe is foreign code
-                logger.debug("epoch probe to %s failed: %s", peer, e)
+                logger.debug("epoch probe to %s failed: %s", peer_id, e)
                 continue
             if snap is not None:
                 return snap
@@ -132,13 +159,18 @@ class EpochWatcher:
                 return
             logger.info(
                 "cluster epoch %d → %d (from %s, peers=%s)",
-                self._epoch, snap.epoch, snap.source_peer, snap.alive_peers,
+                self._epoch, snap.epoch, snap.source_peer,
+                [p.node_id for p in snap.alive_peers],
             )
             self._epoch = snap.epoch
             self._alive_peers = list(snap.alive_peers)
+            # The ring only routes by node_id; suspected peers stay in the
+            # ring until they're declared dead server-side, otherwise a
+            # transient probe failure would cause cluster-wide reshuffles.
+            ring_peers = [p.node_id for p in self._alive_peers]
             # Swap, don't mutate — concurrent readers must see one or the
             # other ring, never a half-built one.
             self._ring = HashRing(
-                peers=self._alive_peers,
+                peers=ring_peers,
                 vnodes_per_peer=self._ring.vnodes_per_peer,
             )
