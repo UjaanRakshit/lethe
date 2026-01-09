@@ -1,0 +1,43 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+dist/
+
+# Generated protobuf stubs
+client/lethe_client/lethe_pb2.py
+client/lethe_client/lethe_pb2_grpc.py
+client/lethe_client/lethe_pb2.pyi
+
+# Tooling
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Benchmark outputs
+benchmarks/plots/*.json
+benchmarks/plots/*.png
+benchmarks/workloads/*.jsonl
+benchmarks/workloads/sharegpt_raw/
+
+# Data
+*.bin
+*.idx
+
+# Local config
+.env

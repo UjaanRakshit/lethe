@@ -1,0 +1,23 @@
+{
+  "title": "Lethe — Distributed KV Cache",
+  "uid": "lethe-main",
+  "panels": [
+    {"title": "Cache hit rate", "type": "stat",
+     "targets": [{"expr": "sum(rate(lethe_requests_total{result=\"hit\"}[1m])) / sum(rate(lethe_requests_total{op=\"lookup\"}[1m]))"}]},
+    {"title": "Lookup latency p50/p99", "type": "timeseries",
+     "targets": [
+       {"expr": "histogram_quantile(0.5, rate(lethe_op_latency_seconds_bucket{op=\"lookup\"}[1m]))", "legendFormat": "p50"},
+       {"expr": "histogram_quantile(0.99, rate(lethe_op_latency_seconds_bucket{op=\"lookup\"}[1m]))", "legendFormat": "p99"}
+     ]},
+    {"title": "Tier usage (bytes)", "type": "timeseries",
+     "targets": [{"expr": "lethe_tier_bytes{state=\"used\"}", "legendFormat": "{{tier}} {{instance}}"}]},
+    {"title": "Cluster epoch", "type": "stat",
+     "targets": [{"expr": "lethe_cluster_epoch"}]},
+    {"title": "Under-replicated blocks", "type": "stat",
+     "targets": [{"expr": "lethe_replicas_under_target"}]},
+    {"title": "Stream throughput (bytes/s)", "type": "timeseries",
+     "targets": [{"expr": "rate(lethe_stream_bytes_total[1m])"}]}
+  ],
+  "schemaVersion": 38,
+  "version": 1
+}

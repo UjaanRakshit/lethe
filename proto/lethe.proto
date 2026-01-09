@@ -1,0 +1,154 @@
+syntax = "proto3";
+
+package lethe;
+
+// Lethe cache RPC surface.
+//
+// Block-level KV cache for disaggregated LLM serving. Blocks are identified
+// by a prefix-chained content hash so that two requests sharing a long prefix
+// resolve to the same block IDs (and therefore the same shard owner).
+//
+// Lifecycle:
+//   - Prefill worker computes KV blocks, calls Insert(...) on the owner node.
+//   - Owner node replicates to R-1 peers via StreamBlocks.
+//   - Decode worker calls Lookup(...) on its preferred node; on RemoteHit,
+//     fetches via StreamBlocks; on Miss, prefill recomputes.
+//   - Cluster control plane runs Heartbeat + EvictBroadcast over gossip.
+
+service LetheCache {
+  // Resolve a list of block IDs against the cluster. Returns per-block
+  // disposition: local hit, remote hit (with node), or miss.
+  rpc Lookup(LookupRequest) returns (LookupResponse);
+
+  // Insert blocks produced during prefill. The cache chooses storage tier
+  // (HBM/DRAM/SSD) and replicates per configured factor.
+  rpc Insert(InsertRequest) returns (InsertResponse);
+
+  // Streamed block transfer. Used for:
+  //   - replication (owner → peer)
+  //   - read-repair (peer → owner after miss)
+  //   - prefill → decode KV handoff in the disaggregated path
+  rpc StreamBlocks(stream BlockChunk) returns (StreamAck);
+
+  // Cluster control plane.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc EvictBroadcast(EvictBroadcastRequest) returns (EvictBroadcastResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Block identity
+// ---------------------------------------------------------------------------
+
+message BlockId {
+  // Chained hash: H(prev_block_id || tokens_in_this_block).
+  // Two requests sharing prefix tokens T_0..T_k produce identical BlockIds
+  // for the first ceil((k+1)/block_size) blocks, which gives us prefix-aware
+  // routing for free under consistent hashing on `hash`.
+  bytes hash = 1;
+
+  uint32 layer = 2;        // transformer layer index
+  uint32 head_group = 3;   // for grouped-query attention; 0 if MHA
+  uint32 model_id = 4;     // namespaces across coexisting models
+}
+
+// ---------------------------------------------------------------------------
+// Lookup
+// ---------------------------------------------------------------------------
+
+message LookupRequest {
+  repeated BlockId block_ids = 1;
+  string request_id = 2;
+  string requesting_node = 3;  // for metrics + read-repair routing
+}
+
+message LookupResponse {
+  message Hit {
+    BlockId id = 1;
+    string source_node = 2;
+    uint32 tier = 3;           // 0=HBM, 1=DRAM, 2=SSD (informs fetch cost)
+  }
+  repeated Hit hits = 1;
+  repeated BlockId misses = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Insert
+// ---------------------------------------------------------------------------
+
+message InsertRequest {
+  message Block {
+    BlockId id = 1;
+    bytes kv_data = 2;        // packed K+V tensor for this block
+    uint32 tier_hint = 3;     // 0=HBM preferred, etc.; cache may override
+  }
+  repeated Block blocks = 1;
+  string request_id = 2;
+  string source_node = 3;
+}
+
+message InsertResponse {
+  uint32 accepted_count = 1;
+  uint32 rejected_count = 2;
+  repeated BlockId replicated_to = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Streamed transfer
+// ---------------------------------------------------------------------------
+
+message BlockChunk {
+  BlockId id = 1;
+  bytes payload = 2;
+  uint64 offset = 3;       // for chunked large blocks
+  bool last = 4;
+  enum Purpose {
+    REPLICATION = 0;
+    READ_REPAIR = 1;
+    PREFILL_TO_DECODE = 2;
+  }
+  Purpose purpose = 5;
+}
+
+message StreamAck {
+  uint32 received_count = 1;
+  uint64 total_bytes = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Membership / gossip
+// ---------------------------------------------------------------------------
+
+message HeartbeatRequest {
+  string node_id = 1;
+  uint64 epoch = 2;
+  repeated PeerStatus known_peers = 3;
+  NodeLoad load = 4;
+}
+
+message PeerStatus {
+  string node_id = 1;
+  uint64 last_seen_epoch = 2;
+  bool suspected = 3;
+}
+
+message NodeLoad {
+  uint64 used_hbm_bytes = 1;
+  uint64 used_dram_bytes = 2;
+  uint64 used_ssd_bytes = 3;
+  uint32 in_flight_requests = 4;
+}
+
+message HeartbeatResponse {
+  repeated PeerStatus alive_peers = 1;
+  uint64 cluster_epoch = 2;
+}
+
+message EvictBroadcastRequest {
+  repeated BlockId evicted = 1;
+  string source_node = 2;
+  uint64 epoch = 3;
+}
+
+message EvictBroadcastResponse {
+  bool ack = 1;
+}

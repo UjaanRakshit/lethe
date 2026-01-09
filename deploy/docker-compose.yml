@@ -1,0 +1,66 @@
+version: "3.9"
+
+x-lethe-base: &lethe-base
+  image: lethe:dev
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+  cap_add:
+    - NET_ADMIN              # for chaos.partition / packet_loss
+  networks:
+    - lethe-net
+
+services:
+  lethe-node0:
+    <<: *lethe-base
+    container_name: lethe-node0
+    command: ["./lethe_server", "node0", "50051",
+              "lethe-node1:50051,lethe-node2:50051"]
+    ports:
+      - "50051:50051"
+      - "9091:9090"
+
+  lethe-node1:
+    <<: *lethe-base
+    container_name: lethe-node1
+    command: ["./lethe_server", "node1", "50051",
+              "lethe-node0:50051,lethe-node2:50051"]
+    ports:
+      - "50061:50051"
+      - "9092:9090"
+
+  lethe-node2:
+    <<: *lethe-base
+    container_name: lethe-node2
+    command: ["./lethe_server", "node2", "50051",
+              "lethe-node0:50051,lethe-node1:50051"]
+    ports:
+      - "50071:50051"
+      - "9093:9090"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lethe-prometheus
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - lethe-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lethe-grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./deploy/grafana:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - lethe-net
+
+networks:
+  lethe-net:
+    driver: bridge

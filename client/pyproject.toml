@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lethe-client"
+version = "0.1.0"
+description = "Python client and vLLM integration for the Lethe distributed KV cache."
+requires-python = ">=3.11"
+dependencies = [
+  "grpcio>=1.60",
+  "grpcio-tools>=1.60",
+  "protobuf>=4.25",
+  "blake3>=0.4",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm>=0.6.0"]
+bench = ["pandas", "matplotlib", "tqdm", "datasets"]
+dev = ["pytest>=8", "pytest-asyncio", "mypy", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lethe_client*"]
