@@ -16,7 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vllm = ["vllm>=0.6.0"]
+# Pinned exactly. See docs/decisions/W1_vllm_pin.md for the analysis;
+# the V1 KV connector API is the integration surface, base.py is
+# byte-identical to 0.19.0, and we accept the experimental-API-churn
+# risk explicitly because Lethe is a 12-week project.
+vllm = ["vllm==0.19.1"]
 bench = ["pandas", "matplotlib", "tqdm", "datasets"]
 dev = ["pytest>=8", "pytest-asyncio", "mypy", "ruff"]
 
