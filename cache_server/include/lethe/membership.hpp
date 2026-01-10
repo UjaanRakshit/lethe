@@ -31,7 +31,19 @@ class Replicator;
 struct PeerInfo {
   std::string node_id;
   std::string address;            // host:port for gRPC
+  // Wall-clock timestamp of the last successful heartbeat. Used by
+  // EvaluateSuspicions() to drive the suspect_after / dead_after timers
+  // (units: steady_clock duration, not cluster epoch).
   std::chrono::steady_clock::time_point last_seen;
+  // Cluster epoch at which we last received a heartbeat from this peer.
+  // Distinct from `last_seen` above: that one is wall-clock-ish and
+  // drives the suspect/dead detector; this one is the monotone cluster-
+  // epoch counter and is what we ship to other nodes (and to the Python
+  // client) so they can reason about staleness of our peer view across
+  // membership changes. Populated by Membership::OnHeartbeat and
+  // surfaced through HeartbeatReply::alive_peers[i].last_seen_epoch
+  // (mirrors proto/lethe.proto message PeerStatus field 2).
+  std::uint64_t last_seen_epoch = 0;
   bool suspected = false;
   bool alive = true;
 };
@@ -78,6 +90,14 @@ class Membership {
 
   // For Evictor.BroadcastEvictions — returns peer gRPC addresses.
   std::vector<std::string> AllPeerAddresses() const;
+
+  // Test-only seam: bump the cluster epoch by 1, simulating a
+  // membership change. The production driver of cluster-epoch advance
+  // is OnMembershipChange (W8). This exists so that unit tests can
+  // observe per-peer `last_seen_epoch` monotonically advancing without
+  // standing up the full failure-detector loop. Do NOT call from
+  // production code paths.
+  void BumpEpochForTesting();
 
  private:
   void HeartbeatLoop();
