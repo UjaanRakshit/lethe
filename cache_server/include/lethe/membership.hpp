@@ -79,6 +79,12 @@ class Membership {
   // RPC entry point. Returns the local view of the cluster — the same
   // alive_peers + cluster_epoch that the gRPC shim ships as
   // HeartbeatResponse (see proto/lethe.proto).
+  //
+  // W8 expansion: the proto's HeartbeatRequest carries known_peers (for
+  // gossip convergence) and load (for admission-control signaling). The
+  // current signature accepts only peer_id and peer_epoch; W8
+  // implementation will widen it. Tracked as a known shape mismatch
+  // with proto/lethe.proto:128-149, not a contradiction.
   HeartbeatReply OnHeartbeat(const std::string& peer_id,
                              std::uint64_t peer_epoch);
 
