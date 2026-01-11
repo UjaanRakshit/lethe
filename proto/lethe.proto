@@ -1,6 +1,10 @@
 syntax = "proto3";
 
-package lethe;
+// Package name is intentionally `lethe.rpc` (not bare `lethe`) so the
+// proto-generated C++ classes live in `lethe::rpc::*` and do not
+// collide with our C++ facade class `lethe::LetheCache`. The Python
+// module name is unaffected (still `lethe_pb2`).
+package lethe.rpc;
 
 // Lethe cache RPC surface.
 //
@@ -33,6 +37,14 @@ service LetheCache {
   // Cluster control plane.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc EvictBroadcast(EvictBroadcastRequest) returns (EvictBroadcastResponse);
+
+  // Single-block pull-shaped fetch. StreamBlocks above is the push-shaped
+  // bulk transport (replication / read-repair / prefill→decode). Fetch
+  // covers the small-payload and request-bytes-from-server case that the
+  // W1 roundtrip test needs and that pre-W5 transports (gRPC streaming
+  // only) can use. For >1 MiB blocks, callers should arrange a
+  // StreamBlocks push instead.
+  rpc Fetch(FetchRequest) returns (FetchResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -151,4 +163,20 @@ message EvictBroadcastRequest {
 
 message EvictBroadcastResponse {
   bool ack = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch (pull-shaped, single block)
+// ---------------------------------------------------------------------------
+
+message FetchRequest {
+  BlockId id = 1;
+  string requesting_node = 2;  // for metrics
+}
+
+message FetchResponse {
+  BlockId id = 1;
+  bytes kv_data = 2;
+  bool found = 3;
+  uint32 tier = 4;             // 0=HBM, 1=DRAM, 2=SSD; informational
 }

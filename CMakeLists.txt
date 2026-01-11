@@ -21,17 +21,37 @@ option(LETHE_BUILD_TESTS "Build unit tests" ON)
 # gRPC + protobuf (required).
 find_package(Protobuf REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
+find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin REQUIRED)
 
 # Generate proto stubs into the build directory.
 set(LETHE_PROTO_SRC ${CMAKE_SOURCE_DIR}/proto/lethe.proto)
 set(LETHE_PROTO_GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${LETHE_PROTO_GEN_DIR})
 
-# (Real protoc invocation deferred; see cache_server/CMakeLists.txt.)
+set(LETHE_PROTO_PB_CC ${LETHE_PROTO_GEN_DIR}/lethe.pb.cc)
+set(LETHE_PROTO_PB_H  ${LETHE_PROTO_GEN_DIR}/lethe.pb.h)
+set(LETHE_PROTO_GRPC_CC ${LETHE_PROTO_GEN_DIR}/lethe.grpc.pb.cc)
+set(LETHE_PROTO_GRPC_H  ${LETHE_PROTO_GEN_DIR}/lethe.grpc.pb.h)
+
+add_custom_command(
+  OUTPUT ${LETHE_PROTO_PB_CC} ${LETHE_PROTO_PB_H}
+         ${LETHE_PROTO_GRPC_CC} ${LETHE_PROTO_GRPC_H}
+  COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+          --cpp_out=${LETHE_PROTO_GEN_DIR}
+          --grpc_out=${LETHE_PROTO_GEN_DIR}
+          --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
+          -I ${CMAKE_SOURCE_DIR}/proto
+          ${LETHE_PROTO_SRC}
+  DEPENDS ${LETHE_PROTO_SRC}
+  COMMENT "Generating C++ proto stubs for lethe.proto"
+  VERBATIM)
+
+# Per-target source list. Both cache_server and tests link these.
+set(LETHE_PROTO_GENERATED_SRCS ${LETHE_PROTO_PB_CC} ${LETHE_PROTO_GRPC_CC})
 
 add_subdirectory(cache_server)
 
 if(LETHE_BUILD_TESTS)
   enable_testing()
-  # add_subdirectory(tests)   # W3 onward
+  add_subdirectory(tests)
 endif()

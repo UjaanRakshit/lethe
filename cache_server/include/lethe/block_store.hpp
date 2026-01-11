@@ -4,10 +4,12 @@
 //
 // W1: implemented. W7 (tiered_store.hpp) composes three of these.
 
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <span>
 #include <unordered_map>
 #include <vector>
 

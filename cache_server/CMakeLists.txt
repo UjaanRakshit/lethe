@@ -20,7 +20,7 @@ if(LETHE_ENABLE_RDMA)
   list(APPEND LETHE_SRCS src/ibverbs_transport.cpp)
 endif()
 
-add_executable(lethe_server ${LETHE_SRCS})
+add_executable(lethe_server ${LETHE_SRCS} ${LETHE_PROTO_GENERATED_SRCS})
 
 target_include_directories(lethe_server PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
