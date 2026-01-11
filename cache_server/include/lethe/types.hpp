@@ -18,6 +18,20 @@ enum class Tier : std::uint8_t {
   SSD = 2,    // disk-backed, slowest, largest
 };
 
+// Reason a block payload is being streamed in. Wire-equivalent to
+// `BlockChunk.purpose` in proto/lethe.proto.
+//
+// LIVES IN types.hpp ON PURPOSE: kv_transport.hpp::KvTransport::OnReceiveFn
+// references this in its typedef, and we don't want kv_transport.hpp to
+// pull in cache.hpp (cache.hpp forward-declares KvTransport, so the
+// reverse include would risk a cycle). The dependency chain is
+// types.hpp → kv_transport.hpp → cache.hpp; keep StreamPurpose here.
+enum class StreamPurpose : std::uint8_t {
+  ReplicationPush = 0,   // primary → replica on Insert
+  ReadRepair = 1,        // local node pulled this from a replica on miss
+  Promotion = 2,         // tier promotion from another node's hotter copy
+};
+
 // 32-byte content hash. BLAKE3 — see DESIGN.md §1 and CLAUDE.md "What to
 // never do." The C++ and Python implementations of `chained_block_hash`
 // MUST produce identical bytes for the same `(prev_hash, tokens)`.

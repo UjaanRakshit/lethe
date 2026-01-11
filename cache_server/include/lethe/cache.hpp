@@ -62,14 +62,6 @@ struct CacheConfig {
   std::size_t eviction_low_watermark_pct = 75;
 };
 
-// Reason a block payload is being streamed in. Wire-equivalent to the
-// `purpose` field of StreamBlocksRequest in proto/lethe.proto.
-enum class StreamPurpose : std::uint8_t {
-  ReplicationPush = 0,   // primary → replica on Insert
-  ReadRepair = 1,        // local node pulled this from a replica on miss
-  Promotion = 2,         // tier promotion from another node's hotter copy
-};
-
 // Result of a Lookup() against the local view of the cluster.
 struct LookupResult {
   struct Entry {
