@@ -1,5 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+# setuptools >= 64 is the first version that ships the PEP 660
+# build_editable() hook; older versions can build wheels but not
+# editable installs through pyproject.toml-only projects (no setup.py).
+# Pip's PEP 517 build-isolation env reads this list, so the local
+# user-installed setuptools doesn't help — the min has to live here.
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
