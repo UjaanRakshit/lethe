@@ -44,6 +44,12 @@ function(lethe_add_unit_test name source)
   target_include_directories(${name} PRIVATE
     ${CMAKE_SOURCE_DIR}/cache_server/include)
   target_link_libraries(${name} PRIVATE Threads::Threads)
+  # Force NDEBUG off so assert() actually executes under RelWithDebInfo.
+  # Top-level CMakeLists defaults to RelWithDebInfo which defines NDEBUG,
+  # which would compile every assert() in the test bodies to a no-op
+  # and leave us with tests that "pass" trivially. -UNDEBUG keeps the
+  # surrounding -O2 -g code-gen but re-enables the assertions.
+  target_compile_options(${name} PRIVATE -UNDEBUG)
   if(_lethe_test_compile_options)
     target_compile_options(${name} PRIVATE ${_lethe_test_compile_options})
     target_link_options(${name}    PRIVATE ${_lethe_test_link_options})
