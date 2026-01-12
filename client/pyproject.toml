@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 name = "lethe-client"
 version = "0.1.0"
 description = "Python client and vLLM integration for the Lethe distributed KV cache."
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
   "grpcio>=1.60",
   "grpcio-tools>=1.60",
