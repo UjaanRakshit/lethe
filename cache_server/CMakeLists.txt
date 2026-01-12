@@ -22,6 +22,11 @@ endif()
 
 add_executable(lethe_server ${LETHE_SRCS} ${LETHE_PROTO_GENERATED_SRCS})
 
+# Ensure the proto-gen step has run before lethe_server compiles. The
+# top-level CMakeLists wraps protoc invocation in the `lethe_proto_gen`
+# phony target precisely for this cross-subdirectory dependency.
+add_dependencies(lethe_server lethe_proto_gen)
+
 # -Werror under GCC/Clang only. MSVC's warning set is different and
 # would surface noise that doesn't reflect real code issues. -Wall and
 # -Wextra are already in the top-level CMakeLists. The generated proto

@@ -70,6 +70,18 @@ add_custom_command(
   COMMENT "Generating C++ proto stubs for lethe.proto"
   VERBATIM)
 
+# Wrap the custom command in a phony target so subdirectories (cache_server)
+# can take a target-level dependency on it via add_dependencies(). Without
+# this, the OUTPUT files referenced from add_executable() across a
+# subdirectory boundary do not always get a build rule emitted into the
+# generated Makefile — the symptom is `gmake: *** No rule to make target
+# 'generated/lethe.pb.cc'` at build time. The add_custom_target binds the
+# rule into this directory's scope; add_dependencies() in the subdirectory
+# carries it across.
+add_custom_target(lethe_proto_gen
+  DEPENDS ${LETHE_PROTO_PB_CC} ${LETHE_PROTO_PB_H}
+          ${LETHE_PROTO_GRPC_CC} ${LETHE_PROTO_GRPC_H})
+
 # Per-target source list. Both cache_server and tests link these.
 set(LETHE_PROTO_GENERATED_SRCS ${LETHE_PROTO_PB_CC} ${LETHE_PROTO_GRPC_CC})
 
