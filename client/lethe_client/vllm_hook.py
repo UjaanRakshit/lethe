@@ -45,7 +45,8 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 
-from .client import LetheClient
+from .client import BlockId, LetheClient
+from .routing import chained_block_hash
 
 if TYPE_CHECKING:
     import torch
@@ -219,14 +220,101 @@ class LetheCacheConnector(KVConnectorBase_V1):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int | None, bool]:
-        # W1.3 invariant: returns (num_new_tokens, False). The False is a
-        # W1 simplification meaning "synchronous load"; W6 changes it to
-        # True once start_load_kv returns futures. Per the W1 plan
-        # adjustment, assert block-alignment when this is implemented and
-        # debug-assert hits*block_size >= num_computed_tokens so a
-        # vLLM-native-cache overlap can't silently corrupt scheduler
-        # state by returning a negative count.
-        raise NotImplementedError("W1.3")
+        """Count external KV cache tokens available beyond what vLLM
+        already has locally.
+
+        Returns ``(new_tokens, False)`` — the ``False`` declares that
+        Lethe loads are synchronous (worker-side ``start_load_kv``
+        blocks). W6 flips this to ``True`` once RDMA-backed transfer
+        produces real futures.
+
+        Threading: called by the scheduler from a single thread per
+        scheduling iteration (vllm/v1/core/sched/scheduler.py:619),
+        same thread as ``build_connector_meta``. No lock required.
+        """
+        token_ids = request.prompt_token_ids or []
+        if not token_ids:
+            return (0, False)
+
+        # Lethe addresses by whole blocks. Partial trailing tokens
+        # become a separate request concern — they get recomputed.
+        n_blocks = len(token_ids) // self._block_size
+        if n_blocks == 0:
+            return (0, False)
+
+        # Compute the chained block hashes for the prefix. This mirrors
+        # the C++ server's hash chain bit-for-bit
+        # (lethe_client/routing.py::chained_block_hash, BLAKE3).
+        block_hashes: list[bytes] = []
+        running = b"\x00" * 32
+        for i in range(n_blocks):
+            start = i * self._block_size
+            block_tokens = token_ids[start : start + self._block_size]
+            running = chained_block_hash(running, block_tokens)
+            block_hashes.append(running)
+
+        # Batch into one Lookup RPC. All blocks for one prefix route to
+        # the same primary per the W0 routing policy (BlockId.layer is
+        # not in the hash) so the batched RPC is the natural shape.
+        # W1 single-node: layer=0 is fine as a presence probe.
+        probe_ids = [
+            BlockId(
+                hash=h,
+                layer=0,
+                head_group=0,
+                model_id=self._model_id,
+            )
+            for h in block_hashes
+        ]
+
+        # Graceful degradation: if the cache is unreachable, fall back
+        # to "no hits" — never block scheduling on cache liveness.
+        try:
+            client = self._ensure_client()
+            result = client.lookup(
+                probe_ids,
+                request_id=request.request_id,
+                requesting_node="lethe-scheduler",
+            )
+        except Exception as e:  # noqa: BLE001 — grpc raises a wide tree
+            logger.warning(
+                "Lethe lookup failed; falling back to cold-cache scheduling. "
+                "request_id=%s lethe_address=%s err_type=%s err=%s",
+                request.request_id,
+                self._lethe_address,
+                type(e).__name__,
+                e,
+            )
+            return (0, False)
+
+        # Count contiguous hits from the START of the prefix.
+        # A hit at block index 5 with a miss at index 3 doesn't help —
+        # vLLM needs contiguous prefix to load any of it.
+        hit_set: set[bytes] = {bytes(h.block_id.hash) for h in result.hits}
+        contiguous_hits = 0
+        for h in block_hashes:
+            if h in hit_set:
+                contiguous_hits += 1
+            else:
+                break
+
+        # Block-alignment invariant: ``hit_tokens`` is a whole multiple of
+        # block_size because contiguous_hits is whole blocks. vLLM's
+        # ``num_computed_tokens`` is also block-aligned (the native
+        # prefix cache returns whole-block counts).
+        hit_tokens = contiguous_hits * self._block_size
+
+        # Defensive clamp. In theory ``hit_tokens >= num_computed_tokens``
+        # because both walk the same prefix from index 0 and Lethe is
+        # usually a superset of vLLM's local prefix cache. In practice
+        # the two caches can diverge (Lethe may evict before vLLM does,
+        # or vice versa), and a negative return would corrupt scheduler
+        # state — vLLM stores the value into ``num_external_computed_
+        # tokens`` and feeds it into a sum (scheduler.py:642). Clamp to
+        # 0 and continue; tests/correctness/test_connector_scheduler.py::
+        # test_get_num_clamps_negative forces the divergent case.
+        new_tokens = max(0, hit_tokens - num_computed_tokens)
+        return (new_tokens, False)
 
     def update_state_after_alloc(
         self,
