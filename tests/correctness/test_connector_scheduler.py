@@ -256,6 +256,94 @@ def test_scheduler_methods_partial_warm(server):
     assert result == (16, False), f"contiguous prefix = block 0 only; got {result}"
 
 
+def test_update_state_then_build_meta_roundtrip(server):
+    """test (e) — update_state_after_alloc records pending load; the
+    next build_connector_meta returns metadata with non-empty loads
+    AND non-empty stores (W1 policy: stores everything that wasn't
+    loaded). A second build_connector_meta on the same scheduler_output
+    returns empty loads — consumption is one-shot.
+    """
+    from types import SimpleNamespace
+
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorMetadata,
+    )
+
+    from lethe_client.vllm_hook import LetheConnectorMetadata
+
+    # Token range that does NOT have to be pre-warmed for this test —
+    # update_state_after_alloc is called by the scheduler AFTER it has
+    # already decided to load N tokens (the connector previously
+    # reported them as available). We synthesize that recorded state
+    # directly rather than re-driving the scheduler.
+    token_ids = list(range(300, 364))  # 64 tokens, 4 blocks at bs=16
+    request_id = "roundtrip-req"
+    request = _make_request(prompt_token_ids=token_ids, request_id=request_id)
+
+    # A KVCacheBlocks stand-in: only get_block_ids() is read by the
+    # implementation. tuple[list[int], ...] outer-per-group, inner per
+    # block. W1 single-group → one inner list of 4 allocated slot IDs.
+    allocated = [101, 102, 103, 104]
+    blocks_mock = SimpleNamespace(
+        get_block_ids=lambda allow_none=False: (allocated,),
+    )
+
+    conn = _make_connector(server)
+
+    # Step 1: tell the connector that 2 blocks (32 tokens) will be
+    # loaded externally for this request.
+    conn.update_state_after_alloc(
+        request, blocks_mock, num_external_tokens=32
+    )
+
+    # Step 2: synthesize a SchedulerOutput with one new request that
+    # mirrors the prompt_token_ids and block_ids the connector will see.
+    new_req = SimpleNamespace(
+        req_id=request_id,
+        prompt_token_ids=token_ids,
+        block_ids=(allocated,),  # one group, 4 blocks
+    )
+    sched_out = SimpleNamespace(scheduled_new_reqs=[new_req])
+
+    meta = conn.build_connector_meta(sched_out)
+    assert isinstance(meta, KVConnectorMetadata)
+    assert isinstance(meta, LetheConnectorMetadata)
+
+    # Loads: exactly the 2 blocks we declared external.
+    assert len(meta.loads) == 1
+    assert meta.loads[0].request_id == request_id
+    assert len(meta.loads[0].blocks) == 2
+    assert all(b.is_hit is True for b in meta.loads[0].blocks)
+    assert [b.vllm_block_id for b in meta.loads[0].blocks] == allocated[:2]
+
+    # Stores: the remaining 2 blocks (W1 policy: store-on-prefill,
+    # skipping what we just loaded).
+    assert len(meta.stores) == 1
+    assert meta.stores[0].request_id == request_id
+    assert len(meta.stores[0].blocks) == 2
+    assert all(b.is_hit is False for b in meta.stores[0].blocks)
+    assert [b.vllm_block_id for b in meta.stores[0].blocks] == allocated[2:]
+
+    # Chained hash continuity check: the first store-block's hash must
+    # equal what you'd get by chaining through blocks 0, 1, 2.
+    expected_hashes = _hashes_for_prefix(token_ids, block_size=16)
+    assert meta.loads[0].blocks[0].chained_hash == expected_hashes[0]
+    assert meta.loads[0].blocks[1].chained_hash == expected_hashes[1]
+    assert meta.stores[0].blocks[0].chained_hash == expected_hashes[2]
+    assert meta.stores[0].blocks[1].chained_hash == expected_hashes[3]
+
+    # Second call → consumption is one-shot. Loads must be empty;
+    # stores will repeat because they're derived from scheduled_new_reqs,
+    # not from the consumed _requests_need_load state.
+    meta2 = conn.build_connector_meta(sched_out)
+    assert meta2.loads == [], (
+        f"second build must have no loads (one-shot); got {meta2.loads}"
+    )
+    # Sanity: stores still populate because they are NOT one-shot
+    # state — they come straight from scheduler_output.
+    assert len(meta2.stores) == 1
+
+
 def test_get_num_clamps_negative(server):
     """test (f) — contrived: vLLM's local cache already covers more
     tokens than Lethe knows about. The return must be (0, False), NOT

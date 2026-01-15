@@ -322,13 +322,111 @@ class LetheCacheConnector(KVConnectorBase_V1):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        raise NotImplementedError("W1.3")
+        """Record a request's pending external load so ``build_connector_meta``
+        can package it into the worker-bound metadata.
+
+        Threading: same single-threaded scheduler contract as
+        ``get_num_new_matched_tokens``.
+        """
+        if num_external_tokens <= 0:
+            return
+
+        # KVCacheBlocks.get_block_ids() returns ``tuple[list[int], ...]``
+        # — outer tuple is per KV-cache-group. W1 single-group assumption;
+        # heterogeneous block sizes per group are an HMA concern
+        # (SupportsHMA mixin) and out of W1 scope.
+        block_id_groups = blocks.get_block_ids()
+        if not block_id_groups or not block_id_groups[0]:
+            return
+
+        n_blocks = num_external_tokens // self._block_size
+        if n_blocks == 0:
+            # vLLM only allocates full blocks; getting num_external_tokens
+            # smaller than a block here would mean a config drift.
+            return
+
+        # Defensive: bound by what was actually allocated (vLLM may pre-
+        # allocate fewer slots than we asked for under capacity pressure).
+        n_blocks = min(n_blocks, len(block_id_groups[0]))
+
+        self._requests_need_load[request.request_id] = {
+            "n_blocks": n_blocks,
+            "allocated_block_ids": list(block_id_groups[0][:n_blocks]),
+        }
 
     def build_connector_meta(
         self,
         scheduler_output: "SchedulerOutput",
     ) -> KVConnectorMetadata:
-        # W1.3 returns a populated ``LetheConnectorMetadata`` and resets
-        # ``self._requests_need_load`` at the end (see ``base.py:512`` —
-        # "calling this function will reset the state of the connector").
-        raise NotImplementedError("W1.3")
+        """Package this step's load/store work into the metadata that
+        will ride to the worker side via ``bind_connector_metadata``.
+
+        Per the base.py docstring at line 512:
+            "calling this function will reset the state of the
+             connector"
+        We honor that by ``pop``-ing entries out of ``_requests_need_load``
+        as we consume them — a second call on the same scheduler_output
+        sees no pending loads.
+
+        W1 store policy: every newly-scheduled request stores every
+        whole-block of its prompt that ISN'T being loaded. Cold-prefilled
+        requests store everything; partially-warm requests store only
+        the new (post-load) blocks. W4+ may add per-block hit-skip and
+        replication wave-shaping.
+        """
+        meta = LetheConnectorMetadata(block_size=self._block_size)
+
+        for new_req in scheduler_output.scheduled_new_reqs:
+            token_ids = new_req.prompt_token_ids or []
+            if not token_ids:
+                continue
+            if not new_req.block_ids or not new_req.block_ids[0]:
+                continue
+            allocated = new_req.block_ids[0]
+
+            # How many blocks this request will load from Lethe (0 if
+            # cold, >0 if update_state_after_alloc recorded it).
+            state = self._requests_need_load.pop(new_req.req_id, None)
+            n_load = int(state["n_blocks"]) if state else 0
+
+            # Whole prefix blocks that have a paged-KV slot allocated.
+            n_whole_blocks = min(
+                len(token_ids) // self._block_size,
+                len(allocated),
+            )
+            if n_whole_blocks == 0:
+                continue
+
+            load_specs: list[LetheBlockSpec] = []
+            store_specs: list[LetheBlockSpec] = []
+            running = b"\x00" * 32
+            for i in range(n_whole_blocks):
+                start = i * self._block_size
+                block_tokens = token_ids[start : start + self._block_size]
+                running = chained_block_hash(running, block_tokens)
+                spec = LetheBlockSpec(
+                    chained_hash=running,
+                    vllm_block_id=int(allocated[i]),
+                    is_hit=(i < n_load),
+                )
+                if i < n_load:
+                    load_specs.append(spec)
+                else:
+                    store_specs.append(spec)
+
+            if load_specs:
+                meta.loads.append(
+                    LetheRequestPayload(
+                        request_id=new_req.req_id,
+                        blocks=load_specs,
+                    )
+                )
+            if store_specs:
+                meta.stores.append(
+                    LetheRequestPayload(
+                        request_id=new_req.req_id,
+                        blocks=store_specs,
+                    )
+                )
+
+        return meta
