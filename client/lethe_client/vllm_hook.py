@@ -35,9 +35,15 @@ test asserts the equivalence-on-fixed-schedule version.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
+import torch
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
@@ -49,8 +55,6 @@ from .client import BlockId, LetheClient
 from .routing import chained_block_hash
 
 if TYPE_CHECKING:
-    import torch
-
     from vllm.config import VllmConfig
     from vllm.forward_context import ForwardContext
     from vllm.v1.attention.backend import AttentionMetadata
@@ -60,6 +64,76 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tensor (de)serialization helpers
+# ---------------------------------------------------------------------------
+
+# torch dtype ↔ numpy dtype mapping for the dtypes we'll actually see in
+# KV cache (Gemma-3-1B is fp16 by default; bf16 added because Llama
+# defaults to bf16 and may surface in W2+ benchmarks).
+_TORCH_TO_NUMPY: dict[torch.dtype, np.dtype] = {
+    torch.float16: np.dtype(np.float16),
+    torch.float32: np.dtype(np.float32),
+    # bf16 has no native numpy dtype; we view as uint16 for byte-roundtrip
+    # and reconstruct with torch.from_numpy + .view(torch.bfloat16).
+    torch.bfloat16: np.dtype(np.uint16),
+}
+
+
+def _tensor_to_bytes(t: torch.Tensor) -> bytes:
+    """Serialize a (potentially-GPU) tensor to raw IEEE-754 bytes.
+
+    Synchronous on purpose: ``save_kv_layer`` must capture the bytes
+    BEFORE returning, because the paged-KV buffer can be overwritten
+    by the next layer's forward — and the connector's executor would
+    otherwise race against that overwrite.
+    """
+    if t.dtype is torch.bfloat16:
+        # bf16 → uint16 view → numpy → bytes
+        return t.detach().cpu().contiguous().view(torch.uint16).numpy().tobytes()
+    return t.detach().cpu().contiguous().numpy().tobytes()
+
+
+def _bytes_to_tensor(
+    payload: bytes,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """Inverse of ``_tensor_to_bytes``. The caller supplies the
+    expected shape/dtype/device — we don't trust wire bytes alone.
+    """
+    np_dtype = _TORCH_TO_NUMPY.get(dtype)
+    if np_dtype is None:
+        raise ValueError(
+            f"Lethe: unsupported KV dtype {dtype}; extend _TORCH_TO_NUMPY"
+        )
+    expected_bytes = int(np.prod(shape)) * np_dtype.itemsize
+    if len(payload) != expected_bytes:
+        raise ValueError(
+            f"Lethe: KV payload size mismatch — got {len(payload)} bytes, "
+            f"expected {expected_bytes} for shape={shape} dtype={dtype}. "
+            f"This usually means the model config drifted between save and "
+            f"load runs, or a layer's KV shape changed."
+        )
+    arr = np.frombuffer(payload, dtype=np_dtype).reshape(shape)
+    # np.frombuffer returns a read-only view; copy so torch can own it.
+    t = torch.from_numpy(arr.copy())
+    if dtype is torch.bfloat16:
+        t = t.view(torch.bfloat16)
+    return t.to(device)
+
+
+def _layer_id_for(layer_name: str) -> int:
+    """Deterministic uint32 derived from layer_name. Stable across
+    processes (unlike Python's randomized hash()), so a save in run B
+    and a load in run C use the same BlockId.layer value.
+    """
+    return int.from_bytes(
+        hashlib.sha256(layer_name.encode()).digest()[:4], "little"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +245,53 @@ class LetheCacheConnector(KVConnectorBase_V1):
         # we type the value as ``Any`` at runtime.
         self._requests_need_load: dict[str, Any] = {}
 
+        # ---- Worker-side state ----------------------------------------
+        #
+        # Concurrency primitive: a single ThreadPoolExecutor for both
+        # background fetches (load path) and background inserts (save
+        # path). Rationale:
+        #
+        #   - LetheClient is sync-shaped (grpcio sync stubs). Wrapping
+        #     it in asyncio would force every connector caller to be
+        #     async-aware — out of proportion for W1.
+        #   - threading is the minimum-surface-area async shim. grpc
+        #     Channels are thread-safe, so worker threads can issue
+        #     concurrent RPCs against the shared client.
+        #   - max_workers=4 leaves CPU headroom for the model forward;
+        #     small-block per-RPC means we're more latency-bound than
+        #     throughput-bound, so a larger pool would help marginally
+        #     at the cost of more thread overhead.
+        #   - W6 RDMA generalizes via the same Future.result()
+        #     contract, so the executor stays even when RDMA replaces
+        #     gRPC underneath.
+        self._executor: ThreadPoolExecutor | None = None
+        if role is KVConnectorRole.WORKER:
+            self._executor = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="lethe-worker"
+            )
+
+        # In-flight load futures keyed by (request_id, layer_id, block_id_index)
+        # → Future[bytes]. Populated by start_load_kv, drained by
+        # wait_for_layer_load. Lock guards the dict; futures are
+        # individually completed by executor threads.
+        self._inflight_loads: dict[tuple[str, int, int], Future] = {}
+        self._inflight_loads_lock = threading.Lock()
+
+        # In-flight save futures. List, not dict — we don't need
+        # individual lookup, just a batch drain in wait_for_save.
+        self._inflight_saves: list[Future] = []
+        self._inflight_saves_lock = threading.Lock()
+
+        # KV tensor shape pinning. Captured on the first save_kv_layer
+        # call per (layer_name); asserted on every subsequent save and
+        # on every load. If a save and load see different shapes for
+        # the same layer, that is a real bug (model config drift,
+        # tensor-parallelism mismatch, etc.) and we surface it loudly
+        # rather than silently reshape.
+        # Key: layer_name → (block_shape, torch.dtype).
+        self._layer_shape_pin: dict[str, tuple[tuple[int, ...], torch.dtype]] = {}
+        self._layer_shape_pin_lock = threading.Lock()
+
         logger.info(
             "LetheCacheConnector init role=%s lethe=%s block_size=%d model_id=%d",
             role.name,
@@ -178,6 +299,16 @@ class LetheCacheConnector(KVConnectorBase_V1):
             self._block_size,
             self._model_id,
         )
+
+    def __del__(self):
+        # Best-effort executor shutdown. Avoid raising in __del__ even
+        # if attributes don't exist yet (constructor exception path).
+        try:
+            ex = self.__dict__.get("_executor")
+            if ex is not None:
+                ex.shutdown(wait=False)
+        except Exception:
+            pass
 
     def _ensure_client(self) -> LetheClient:
         if self._client is None:
@@ -206,10 +337,140 @@ class LetheCacheConnector(KVConnectorBase_V1):
         attn_metadata: "AttentionMetadata",
         **kwargs: Any,
     ) -> None:
-        raise NotImplementedError("W1.4")
+        """Capture this layer's KV bytes for the store-eligible blocks
+        recorded by ``build_connector_meta``, async-push to Lethe.
+
+        Sync part: read the connector metadata, slice the per-block
+        tensor out of ``kv_layer``, move bytes to CPU. Done in the
+        calling thread because ``kv_layer`` may be overwritten by the
+        next layer's forward.
+
+        Async part: serialize bytes + Insert RPC. Submitted to the
+        executor; ``wait_for_save`` blocks on completion.
+        """
+        if self._executor is None:
+            # Non-worker role shouldn't be called here; bug if it is.
+            raise RuntimeError(
+                "save_kv_layer called on non-WORKER role connector"
+            )
+
+        try:
+            metadata = self._get_connector_metadata()
+        except AssertionError:
+            # No metadata bound for this forward — nothing to save.
+            return
+        if not isinstance(metadata, LetheConnectorMetadata):
+            return
+        if not metadata.stores:
+            return
+
+        # Layer shape comes from kv_layer. Reference layout (non-MLA,
+        # non-Triton): (2, num_pages, page_size, kv_dim_per_token)
+        # where the leading 2 is K|V and page_size == block_size.
+        if kv_layer.ndim != 4 or kv_layer.shape[0] != 2:
+            raise RuntimeError(
+                f"Lethe: unexpected kv_layer shape {tuple(kv_layer.shape)} "
+                f"for layer {layer_name!r}; expected (2, num_pages, "
+                f"page_size, kv_dim). MLA / Triton layouts are not "
+                f"handled in W1; surface this and triage rather than "
+                f"silently coercing."
+            )
+        page_size = kv_layer.shape[2]
+        if page_size != metadata.block_size:
+            raise RuntimeError(
+                f"Lethe: kv_layer page_size={page_size} != "
+                f"metadata.block_size={metadata.block_size} for layer "
+                f"{layer_name!r}. Block-hash chain would diverge from "
+                f"vLLM's block boundaries; refusing to save."
+            )
+
+        # Per-block expected shape: (2, page_size, kv_dim).
+        per_block_shape = (2, page_size, kv_layer.shape[3])
+        per_block_dtype = kv_layer.dtype
+
+        # Pin shape+dtype for this layer on first sight; assert on
+        # subsequent saves. A mismatch here is a real bug worth a
+        # loud error rather than a silent reshape.
+        with self._layer_shape_pin_lock:
+            pinned = self._layer_shape_pin.get(layer_name)
+            if pinned is None:
+                self._layer_shape_pin[layer_name] = (per_block_shape, per_block_dtype)
+                logger.info(
+                    "Lethe: pinned layer %r shape=%s dtype=%s",
+                    layer_name, per_block_shape, per_block_dtype,
+                )
+            elif pinned != (per_block_shape, per_block_dtype):
+                raise RuntimeError(
+                    f"Lethe: layer {layer_name!r} KV shape drifted from "
+                    f"{pinned} to {(per_block_shape, per_block_dtype)} "
+                    f"between save calls. Model config change?"
+                )
+
+        layer_id = _layer_id_for(layer_name)
+        client = self._ensure_client()
+
+        # Capture per-block bytes synchronously, then submit Insert
+        # batches asynchronously.
+        insert_batch: list[tuple[BlockId, bytes]] = []
+        for payload in metadata.stores:
+            for spec in payload.blocks:
+                vllm_blk = spec.vllm_block_id
+                if vllm_blk >= kv_layer.shape[1]:
+                    # vLLM allocated a block ID outside this layer's pool
+                    # (shouldn't happen at steady state). Skip rather
+                    # than crash; surface via logger so it's visible.
+                    logger.warning(
+                        "Lethe: vllm_block_id=%d out of range "
+                        "(num_pages=%d) for layer %r request=%s; skipping",
+                        vllm_blk, kv_layer.shape[1], layer_name,
+                        payload.request_id,
+                    )
+                    continue
+                # Slice: kv_layer[:, vllm_blk, :, :] → (2, page_size, kv_dim)
+                block_tensor = kv_layer[:, vllm_blk, :, :]
+                block_bytes = _tensor_to_bytes(block_tensor)
+                block_id = BlockId(
+                    hash=spec.chained_hash,
+                    layer=layer_id,
+                    head_group=0,
+                    model_id=self._model_id,
+                )
+                insert_batch.append((block_id, block_bytes))
+
+        if not insert_batch:
+            return
+
+        # Submit one Insert RPC per layer-step (batched across all
+        # store-eligible blocks for all scheduled requests in this step).
+        request_id = f"save-{layer_name}-{id(metadata):x}"
+        future = self._executor.submit(
+            client.insert,
+            insert_batch,
+            request_id,
+            "lethe-worker",
+        )
+        with self._inflight_saves_lock:
+            self._inflight_saves.append(future)
 
     def wait_for_save(self) -> None:
-        raise NotImplementedError("W1.4")
+        """Drain all pending save Inserts submitted this forward.
+
+        Called by vLLM at forward-context exit. We block until every
+        future returned by ``save_kv_layer``'s executor.submit completes.
+        Any exception from a save Insert is logged but not re-raised:
+        a cache write failure must not stall the engine.
+        """
+        with self._inflight_saves_lock:
+            futures = self._inflight_saves
+            self._inflight_saves = []
+        for fut in futures:
+            try:
+                fut.result(timeout=30.0)
+            except Exception as e:  # noqa: BLE001 — grpc raises a wide tree
+                logger.warning(
+                    "Lethe: save Insert failed (not re-raised): %s",
+                    e,
+                )
 
     # ======================================================================
     # Scheduler-side abstract methods (base.py:449-518)
