@@ -322,13 +322,217 @@ class LetheCacheConnector(KVConnectorBase_V1):
     def start_load_kv(
         self, forward_context: "ForwardContext", **kwargs: Any
     ) -> None:
-        # W1: synchronous load path; ``False`` is returned from
-        # ``get_num_new_matched_tokens`` to signal sync semantics, so this
-        # method blocks. W6 turns this into a real async start.
-        raise NotImplementedError("W1.4")
+        """Kick off background Fetches for every (layer × pending-load
+        block) pair recorded in the bound metadata.
+
+        Per-block Fetch RPCs are submitted to the executor immediately;
+        ``wait_for_layer_load`` drains the futures for one layer when
+        that layer's forward asks. The whole set runs in the background
+        while early layers compute.
+        """
+        if self._executor is None:
+            raise RuntimeError(
+                "start_load_kv called on non-WORKER role connector"
+            )
+        try:
+            metadata = self._get_connector_metadata()
+        except AssertionError:
+            return
+        if not isinstance(metadata, LetheConnectorMetadata):
+            return
+        if not metadata.loads:
+            return
+
+        # forward_context.attn_metadata is dict[layer_name] -> AttnMd in
+        # 0.19.1 (forward_context.py:191). We use the keys to enumerate
+        # the layer names we'll need to fetch for.
+        attn_md = forward_context.attn_metadata
+        if attn_md is None:
+            logger.warning(
+                "Lethe: start_load_kv called but forward_context.attn_metadata "
+                "is None; no fetches submitted"
+            )
+            return
+        if isinstance(attn_md, list):
+            # Virtual-engine list-of-dicts case. Flatten layer-name keys
+            # across all VEs; concurrent fetches across VEs is fine.
+            layer_names: list[str] = []
+            for d in attn_md:
+                if isinstance(d, dict):
+                    layer_names.extend(d.keys())
+        elif isinstance(attn_md, dict):
+            layer_names = list(attn_md.keys())
+        else:
+            logger.warning(
+                "Lethe: unexpected forward_context.attn_metadata type %s; "
+                "no fetches submitted", type(attn_md).__name__,
+            )
+            return
+
+        client = self._ensure_client()
+
+        # Submit one Fetch per (request, layer, block). The
+        # _inflight_loads key is (request_id, layer_id, block_index)
+        # so wait_for_layer_load can drain by (layer_id) and reapply
+        # bytes block-by-block.
+        with self._inflight_loads_lock:
+            for payload in metadata.loads:
+                for layer_name in layer_names:
+                    layer_id = _layer_id_for(layer_name)
+                    for block_index, spec in enumerate(payload.blocks):
+                        if not spec.is_hit:
+                            # Defensive: loads list should only carry
+                            # hits, but skip just in case.
+                            continue
+                        block_id = BlockId(
+                            hash=spec.chained_hash,
+                            layer=layer_id,
+                            head_group=0,
+                            model_id=self._model_id,
+                        )
+                        key = (payload.request_id, layer_id, block_index)
+                        self._inflight_loads[key] = self._executor.submit(
+                            client.fetch, block_id, "lethe-worker",
+                        )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
-        raise NotImplementedError("W1.4")
+        """Drain all pending fetches for this layer and inject the
+        bytes into the layer's KV cache at the recorded block slots.
+
+        Called from inside the attention layer's forward, so this is
+        the join point between the background fetch and the synchronous
+        forward computation.
+        """
+        if self._executor is None:
+            raise RuntimeError(
+                "wait_for_layer_load called on non-WORKER role connector"
+            )
+        try:
+            metadata = self._get_connector_metadata()
+        except AssertionError:
+            return
+        if not isinstance(metadata, LetheConnectorMetadata):
+            return
+        if not metadata.loads:
+            return
+
+        layer_id = _layer_id_for(layer_name)
+
+        # Drain the futures for this layer. Collect (request_id,
+        # block_index) → bytes results synchronously.
+        results: dict[tuple[str, int], bytes | None] = {}
+        with self._inflight_loads_lock:
+            our_keys = [
+                k for k in self._inflight_loads if k[1] == layer_id
+            ]
+            our_futures = {k: self._inflight_loads.pop(k) for k in our_keys}
+
+        for (req_id, _lid, block_idx), fut in our_futures.items():
+            try:
+                results[(req_id, block_idx)] = fut.result(timeout=30.0)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Lethe: fetch failed for request=%s layer=%s "
+                    "block_index=%d (continuing without cached block): %s",
+                    req_id, layer_name, block_idx, e,
+                )
+                results[(req_id, block_idx)] = None
+
+        if not results:
+            return
+
+        # We need the kv_cache tensor for this layer. forward_context's
+        # no_compile_layers exposes it; the reference example_connector
+        # uses the same path.
+        from vllm.forward_context import get_forward_context
+
+        try:
+            fwd = get_forward_context()
+        except Exception:
+            logger.warning(
+                "Lethe: no current forward context inside "
+                "wait_for_layer_load(layer=%s); skipping inject",
+                layer_name,
+            )
+            return
+
+        layer = None
+        try:
+            layer = fwd.no_compile_layers.get(layer_name)
+        except AttributeError:
+            pass
+        if layer is None:
+            logger.warning(
+                "Lethe: layer %r not found in forward_context.no_compile_layers; "
+                "skipping inject (cache hit will be lost; vLLM will recompute)",
+                layer_name,
+            )
+            return
+        kv_cache_layer = getattr(layer, "kv_cache", None)
+        if kv_cache_layer is None:
+            return
+        # In some vLLM configurations kv_cache is a per-virtual-engine
+        # list; pick index 0 (we don't drive multi-VE in W1).
+        if isinstance(kv_cache_layer, list):
+            kv_cache_layer = kv_cache_layer[0]
+
+        if kv_cache_layer.ndim != 4 or kv_cache_layer.shape[0] != 2:
+            raise RuntimeError(
+                f"Lethe: unexpected kv_cache shape "
+                f"{tuple(kv_cache_layer.shape)} for layer {layer_name!r} "
+                f"on load; expected (2, num_pages, page_size, kv_dim)"
+            )
+        page_size = kv_cache_layer.shape[2]
+        per_block_shape = (2, page_size, kv_cache_layer.shape[3])
+        device = kv_cache_layer.device
+        dtype = kv_cache_layer.dtype
+
+        # Cross-check the pinned shape if save_kv_layer has fired
+        # before. If load runs in a fresh process (warm-cache run),
+        # this dict is empty and we accept the runtime shape.
+        with self._layer_shape_pin_lock:
+            pinned = self._layer_shape_pin.get(layer_name)
+            if pinned is not None and pinned != (per_block_shape, dtype):
+                raise RuntimeError(
+                    f"Lethe: layer {layer_name!r} KV shape drifted "
+                    f"between save {pinned} and load "
+                    f"{(per_block_shape, dtype)}"
+                )
+
+        # Build a request_id → list[vllm_block_id] map so we know where
+        # each loaded block index goes in the paged buffer.
+        block_id_lookup: dict[str, list[int]] = {}
+        for payload in metadata.loads:
+            block_id_lookup[payload.request_id] = [
+                spec.vllm_block_id for spec in payload.blocks
+            ]
+
+        # Inject. Each block: convert bytes → tensor of per_block_shape,
+        # then copy into kv_cache_layer[:, vllm_blk, :, :].
+        for (req_id, block_idx), payload_bytes in results.items():
+            if payload_bytes is None:
+                continue
+            vllm_blocks = block_id_lookup.get(req_id, [])
+            if block_idx >= len(vllm_blocks):
+                logger.warning(
+                    "Lethe: block_index=%d out of range for request=%s "
+                    "(have %d allocated slots); skipping inject",
+                    block_idx, req_id, len(vllm_blocks),
+                )
+                continue
+            vllm_blk = vllm_blocks[block_idx]
+            if vllm_blk >= kv_cache_layer.shape[1]:
+                logger.warning(
+                    "Lethe: vllm_block_id=%d out of range for layer %r; "
+                    "skipping inject", vllm_blk, layer_name,
+                )
+                continue
+            block_tensor = _bytes_to_tensor(
+                payload_bytes, per_block_shape, dtype, device,
+            )
+            # Copy into the slot. Use .copy_ for in-place into the
+            # existing paged-buffer storage.
+            kv_cache_layer[:, vllm_blk, :, :].copy_(block_tensor)
 
     def save_kv_layer(
         self,
