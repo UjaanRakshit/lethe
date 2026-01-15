@@ -360,3 +360,25 @@ def test_get_num_clamps_negative(server):
     assert result == (0, False), (
         f"expected clamp to (0, False) when local > external; got {result}"
     )
+
+
+def test_llm_generate_smoke_deferred_to_W1_4():
+    """W1.3 originally planned a CPU vLLM ``LLM.generate()`` smoke test
+    to prove the scheduler-side methods survive being driven by a real
+    engine (and that the ``NotImplementedError("W1.4")`` worker-side
+    stubs fire, not the scheduler-side ones). That smoke test is
+    deferred to W1.4 — see ``docs/decisions/W1_3_cpu_vllm.md``.
+
+    Short version of the decision: standard ``vllm==0.19.1`` from PyPI
+    is a CUDA-only wheel; its CPU platform fallback only fires for
+    macOS or a from-source ``vllm-cpu`` build, neither of which
+    applies to WSL2 Linux. Rather than (a) build vllm-cpu from source
+    or (b) violate "GPU work begins at W1.4" by using the GPU now,
+    we close W1.3 on the six unit tests above and pick up the
+    end-to-end LLM-driven check inside W1.4's token-identical
+    correctness test — where it would naturally happen anyway.
+    """
+    pytest.skip(
+        "moved to W1.4 token-identical test; CPU vllm not available "
+        "in this env (see docs/decisions/W1_3_cpu_vllm.md)"
+    )
