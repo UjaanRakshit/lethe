@@ -103,7 +103,7 @@ def test_abstract_methods_raise_with_subtask_label():
     config = _make_vllm_config()
     conn = KVConnectorFactory.create_connector(config, KVConnectorRole.WORKER)
 
-    # Worker-side methods are all W1.4.
+    # Worker-side methods are still W1.4 stubs.
     with pytest.raises(NotImplementedError, match=r"W1\.4"):
         conn.start_load_kv(forward_context=None)
     with pytest.raises(NotImplementedError, match=r"W1\.4"):
@@ -113,16 +113,42 @@ def test_abstract_methods_raise_with_subtask_label():
     with pytest.raises(NotImplementedError, match=r"W1\.4"):
         conn.wait_for_save()
 
-    # Scheduler-side methods are all W1.3.
+    # The three scheduler-side methods were W1.3 stubs at the time
+    # of W1.1, but landed for real in W1.3. Their NotImplementedError
+    # markers are gone; the behavior is now exercised end-to-end by
+    # tests/correctness/test_connector_scheduler.py. Asserting that
+    # they STAY implemented is more useful than asserting the gone
+    # stub messages — if a future commit accidentally reverts one to
+    # NotImplementedError, this catches it.
     sched = KVConnectorFactory.create_connector(config, KVConnectorRole.SCHEDULER)
-    with pytest.raises(NotImplementedError, match=r"W1\.3"):
-        sched.get_num_new_matched_tokens(request=None, num_computed_tokens=0)
-    with pytest.raises(NotImplementedError, match=r"W1\.3"):
-        sched.update_state_after_alloc(
-            request=None, blocks=None, num_external_tokens=0
-        )
-    with pytest.raises(NotImplementedError, match=r"W1\.3"):
-        sched.build_connector_meta(scheduler_output=None)
+    for method_name in (
+        "get_num_new_matched_tokens",
+        "update_state_after_alloc",
+        "build_connector_meta",
+    ):
+        method = getattr(sched, method_name)
+        # __code__.co_filename of a NotImplementedError-only stub points
+        # at vllm_hook.py and the body is a single `raise`. We don't
+        # introspect that — just assert that calling with sentinel-None
+        # args does NOT raise NotImplementedError. AttributeError or
+        # similar from operating on None is fine and expected; that's
+        # what proves the method has a real body.
+        try:
+            if method_name == "get_num_new_matched_tokens":
+                method(request=None, num_computed_tokens=0)
+            elif method_name == "update_state_after_alloc":
+                method(request=None, blocks=None, num_external_tokens=0)
+            else:
+                method(scheduler_output=None)
+        except NotImplementedError as e:  # pragma: no cover — regression sentinel
+            pytest.fail(
+                f"{method_name} regressed to NotImplementedError({e!r}); "
+                f"W1.3 implementations should remain in place"
+            )
+        except Exception:
+            # Any other exception (AttributeError on None.x, etc.) is
+            # the expected outcome of calling a real method with None.
+            pass
 
 
 def test_extra_config_round_trip():
