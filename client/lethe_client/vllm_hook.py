@@ -476,14 +476,17 @@ class LetheCacheConnector(KVConnectorBase_V1):
         if isinstance(kv_cache_layer, list):
             kv_cache_layer = kv_cache_layer[0]
 
-        if kv_cache_layer.ndim != 4 or kv_cache_layer.shape[0] != 2:
+        if kv_cache_layer.ndim < 4 or kv_cache_layer.shape[0] != 2:
             raise RuntimeError(
                 f"Lethe: unexpected kv_cache shape "
                 f"{tuple(kv_cache_layer.shape)} for layer {layer_name!r} "
-                f"on load; expected (2, num_pages, page_size, kv_dim)"
+                f"on load; expected (2, num_pages, page_size, ...). See "
+                f"save_kv_layer's matching shape comment."
             )
         page_size = kv_cache_layer.shape[2]
-        per_block_shape = (2, page_size, kv_cache_layer.shape[3])
+        # Per-block shape mirrors save_kv_layer's derivation — n-D
+        # trailing dims kept verbatim.
+        per_block_shape = (2, page_size) + tuple(kv_cache_layer.shape[3:])
         device = kv_cache_layer.device
         dtype = kv_cache_layer.dtype
 
@@ -531,8 +534,10 @@ class LetheCacheConnector(KVConnectorBase_V1):
                 payload_bytes, per_block_shape, dtype, device,
             )
             # Copy into the slot. Use .copy_ for in-place into the
-            # existing paged-buffer storage.
-            kv_cache_layer[:, vllm_blk, :, :].copy_(block_tensor)
+            # existing paged-buffer storage. Slice ellipsis covers the
+            # n-D trailing dims (see save_kv_layer for the matching
+            # extraction).
+            kv_cache_layer[:, vllm_blk].copy_(block_tensor)
 
     def save_kv_layer(
         self,
@@ -568,16 +573,23 @@ class LetheCacheConnector(KVConnectorBase_V1):
         if not metadata.stores:
             return
 
-        # Layer shape comes from kv_layer. Reference layout (non-MLA,
-        # non-Triton): (2, num_pages, page_size, kv_dim_per_token)
-        # where the leading 2 is K|V and page_size == block_size.
-        if kv_layer.ndim != 4 or kv_layer.shape[0] != 2:
+        # Layer shape: leading 2 is K|V, dim 1 is num_pages, dim 2 is
+        # page_size, then a model-specific tail. In vllm 0.19.1 the
+        # tail is (num_kv_heads, head_size) for GQA models like
+        # Gemma-3 — empirically (2, 9872, 16, 1, 256) for Gemma-3-1B
+        # — and a single flattened dim for some other backends. We
+        # don't assume a specific number of trailing dims; we slice
+        # kv_layer[:, vllm_blk, ...] and serialize the per-block
+        # subtensor whole. The reference example_connector docstring
+        # at v1/example_connector.py:128 describes "(2, num_pages,
+        # page_size, xxx)" but that's after a reshape; the un-
+        # reshaped tensor can be higher-rank.
+        if kv_layer.ndim < 4 or kv_layer.shape[0] != 2:
             raise RuntimeError(
                 f"Lethe: unexpected kv_layer shape {tuple(kv_layer.shape)} "
                 f"for layer {layer_name!r}; expected (2, num_pages, "
-                f"page_size, kv_dim). MLA / Triton layouts are not "
-                f"handled in W1; surface this and triage rather than "
-                f"silently coercing."
+                f"page_size, ...). MLA layouts (no leading 2) and "
+                f"flat layouts (ndim<4) are not handled in W1."
             )
         page_size = kv_layer.shape[2]
         if page_size != metadata.block_size:
@@ -588,8 +600,9 @@ class LetheCacheConnector(KVConnectorBase_V1):
                 f"vLLM's block boundaries; refusing to save."
             )
 
-        # Per-block expected shape: (2, page_size, kv_dim).
-        per_block_shape = (2, page_size, kv_layer.shape[3])
+        # Per-block expected shape: (2, page_size, ...trailing dims...).
+        # Built from the runtime shape so n-D tails work transparently.
+        per_block_shape: tuple[int, ...] = (2, page_size) + tuple(kv_layer.shape[3:])
         per_block_dtype = kv_layer.dtype
 
         # Pin shape+dtype for this layer on first sight; assert on
@@ -630,8 +643,11 @@ class LetheCacheConnector(KVConnectorBase_V1):
                         payload.request_id,
                     )
                     continue
-                # Slice: kv_layer[:, vllm_blk, :, :] → (2, page_size, kv_dim)
-                block_tensor = kv_layer[:, vllm_blk, :, :]
+                # Slice: kv_layer[:, vllm_blk, ...] → (2, page_size, ...trail).
+                # The ellipsis covers however many trailing dims this
+                # layer's tensor has (4D flat in the reference impl,
+                # 5D GQA-shaped in Gemma-3, etc.).
+                block_tensor = kv_layer[:, vllm_blk]
                 block_bytes = _tensor_to_bytes(block_tensor)
                 block_id = BlockId(
                     hash=spec.chained_hash,
