@@ -244,9 +244,14 @@ def test_save_via_connector_then_fetch_is_byte_identical(server):
             model_id=0,
         ))
     assert fetched is not None, "block not found in cache after save+wait_for_save"
-    assert fetched == expected_bytes, (
-        f"byte mismatch: saved {len(expected_bytes)}B, fetched {len(fetched)}B; "
-        f"first-diff at offset "
-        f"{next((i for i in range(min(len(fetched), len(expected_bytes))) "
-        f"if fetched[i] != expected_bytes[i]), 'N/A')}"
-    )
+    if fetched != expected_bytes:
+        # Compute the first byte that differs for the failure message.
+        n = min(len(fetched), len(expected_bytes))
+        first_diff = next(
+            (i for i in range(n) if fetched[i] != expected_bytes[i]),
+            None,
+        )
+        raise AssertionError(
+            f"byte mismatch: saved {len(expected_bytes)}B, "
+            f"fetched {len(fetched)}B; first-diff offset={first_diff}"
+        )
