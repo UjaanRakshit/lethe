@@ -101,54 +101,53 @@ def test_abstract_methods_raise_with_subtask_label():
     'I'll get to that later' drift the user explicitly warned about.
     """
     config = _make_vllm_config()
-    conn = KVConnectorFactory.create_connector(config, KVConnectorRole.WORKER)
 
-    # Worker-side methods are still W1.4 stubs.
-    with pytest.raises(NotImplementedError, match=r"W1\.4"):
-        conn.start_load_kv(forward_context=None)
-    with pytest.raises(NotImplementedError, match=r"W1\.4"):
-        conn.wait_for_layer_load("layer0")
-    with pytest.raises(NotImplementedError, match=r"W1\.4"):
-        conn.save_kv_layer("layer0", None, None)
-    with pytest.raises(NotImplementedError, match=r"W1\.4"):
-        conn.wait_for_save()
-
-    # The three scheduler-side methods were W1.3 stubs at the time
-    # of W1.1, but landed for real in W1.3. Their NotImplementedError
-    # markers are gone; the behavior is now exercised end-to-end by
-    # tests/correctness/test_connector_scheduler.py. Asserting that
-    # they STAY implemented is more useful than asserting the gone
-    # stub messages — if a future commit accidentally reverts one to
-    # NotImplementedError, this catches it.
+    # W1.3 scheduler-side methods + W1.4 worker-side methods all landed
+    # for real. Their NotImplementedError markers are gone; the behavior
+    # is exercised end-to-end by tests/correctness/test_connector_
+    # scheduler.py (scheduler) and tests/correctness/test_token_
+    # identical.py + test_save_load_byte_identical.py (worker).
+    # Asserting that they STAY implemented is more useful than asserting
+    # the gone stub messages — if a future commit accidentally reverts
+    # one to NotImplementedError, this catches it.
     sched = KVConnectorFactory.create_connector(config, KVConnectorRole.SCHEDULER)
-    for method_name in (
-        "get_num_new_matched_tokens",
-        "update_state_after_alloc",
-        "build_connector_meta",
+    worker = KVConnectorFactory.create_connector(config, KVConnectorRole.WORKER)
+
+    sched_method_args = {
+        "get_num_new_matched_tokens": dict(request=None, num_computed_tokens=0),
+        "update_state_after_alloc": dict(
+            request=None, blocks=None, num_external_tokens=0
+        ),
+        "build_connector_meta": dict(scheduler_output=None),
+    }
+    worker_method_args = {
+        "start_load_kv": dict(forward_context=None),
+        "wait_for_layer_load": ("layer0",),
+        "save_kv_layer": ("layer0", None, None),
+        "wait_for_save": (),
+    }
+
+    for (conn, method_args, side_label) in (
+        (sched, sched_method_args, "W1.3"),
+        (worker, worker_method_args, "W1.4"),
     ):
-        method = getattr(sched, method_name)
-        # __code__.co_filename of a NotImplementedError-only stub points
-        # at vllm_hook.py and the body is a single `raise`. We don't
-        # introspect that — just assert that calling with sentinel-None
-        # args does NOT raise NotImplementedError. AttributeError or
-        # similar from operating on None is fine and expected; that's
-        # what proves the method has a real body.
-        try:
-            if method_name == "get_num_new_matched_tokens":
-                method(request=None, num_computed_tokens=0)
-            elif method_name == "update_state_after_alloc":
-                method(request=None, blocks=None, num_external_tokens=0)
-            else:
-                method(scheduler_output=None)
-        except NotImplementedError as e:  # pragma: no cover — regression sentinel
-            pytest.fail(
-                f"{method_name} regressed to NotImplementedError({e!r}); "
-                f"W1.3 implementations should remain in place"
-            )
-        except Exception:
-            # Any other exception (AttributeError on None.x, etc.) is
-            # the expected outcome of calling a real method with None.
-            pass
+        for method_name, call_args in method_args.items():
+            method = getattr(conn, method_name)
+            try:
+                if isinstance(call_args, dict):
+                    method(**call_args)
+                else:
+                    method(*call_args)
+            except NotImplementedError as e:  # pragma: no cover — sentinel
+                pytest.fail(
+                    f"{method_name} regressed to NotImplementedError({e!r}); "
+                    f"{side_label} implementations should remain in place"
+                )
+            except Exception:
+                # Any other exception (AttributeError on None.x,
+                # RuntimeError from missing metadata, etc.) is the
+                # expected outcome of calling a real method with None.
+                pass
 
 
 def test_extra_config_round_trip():
