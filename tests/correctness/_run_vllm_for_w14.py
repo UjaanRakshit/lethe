@@ -15,7 +15,11 @@ mitigate by:
   - greedy decoding (temperature=0)
   - one prompt per generate() call (constant batch composition)
   - enforce_eager=True (no CUDA-graph capture)
-  - dtype=float16 (Gemma-3 default; consistent across runs)
+  - dtype=bfloat16 (vLLM 0.19.1 explicitly rejects float16 for
+    gemma3_text — "Numerical instability. Please use bfloat16 or
+    float32 instead." Documented in vllm/engine/arg_utils.py model
+    config validation.)
+  - seed=42
 A single warmup generate() runs before the timed prompts to settle
 allocator state.
 """
@@ -154,7 +158,7 @@ def main() -> int:
 
     llm_kwargs = dict(
         model=args.model,
-        dtype="float16",
+        dtype="bfloat16",  # gemma3_text rejects fp16 — see docstring
         enforce_eager=True,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=0.85,
