@@ -42,7 +42,7 @@ void TestLastSeenEpochAdvancesAcrossHeartbeats() {
   lethe::MembershipConfig cfg;
   lethe::Membership m(cfg,
                       /*local_node_id=*/"node_self",
-                      /*seed_peers=*/{"nodeA"},
+                      /*seed_peers=*/{{"nodeA", "127.0.0.1:0"}},
                       /*router=*/nullptr,
                       /*replicator=*/nullptr);
 

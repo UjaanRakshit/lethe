@@ -68,7 +68,7 @@ class Membership {
  public:
   Membership(MembershipConfig cfg,
              std::string local_node_id,
-             std::vector<std::string> seed_peers,
+             std::vector<StaticPeer> seed_peers,
              Router* router,
              Replicator* replicator);
   ~Membership();

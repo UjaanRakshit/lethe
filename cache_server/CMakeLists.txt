@@ -1,5 +1,26 @@
 # cache_server/CMakeLists.txt
 
+# Vendored BLAKE3 1.5.4 (portable C only, no SIMD dispatch). Single
+# static library shared with the hash_compat_driver tool and the unit
+# tests. The Python side uses the pyblake3 wrapper around the upstream
+# Rust impl; both are BLAKE3-spec-compliant so digests agree
+# bit-for-bit. Cross-language equivalence is asserted in
+# tests/correctness/test_hash_compat.py via the driver subprocess.
+set(LETHE_BLAKE3_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/blake3)
+add_library(lethe_blake3 STATIC
+  ${LETHE_BLAKE3_DIR}/blake3.c
+  ${LETHE_BLAKE3_DIR}/blake3_dispatch.c
+  ${LETHE_BLAKE3_DIR}/blake3_portable.c
+)
+target_compile_definitions(lethe_blake3 PRIVATE
+  BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
+target_include_directories(lethe_blake3 PUBLIC ${LETHE_BLAKE3_DIR})
+# The vendored .c sources use a few non-portable patterns the global
+# -Wpedantic flags us on. Suppress for the third-party tree only.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(lethe_blake3 PRIVATE -w)
+endif()
+
 set(LETHE_SRCS
   src/main.cpp
   src/cache.cpp
@@ -55,7 +76,9 @@ target_link_libraries(lethe_server PRIVATE
   gRPC::grpc++
   protobuf::libprotobuf
   Threads::Threads
+  lethe_blake3
 )
+target_include_directories(lethe_server PRIVATE ${LETHE_BLAKE3_DIR})
 
 if(LETHE_ENABLE_RDMA)
   target_link_libraries(lethe_server PRIVATE ibverbs rdmacm)
@@ -69,3 +92,17 @@ if(LETHE_ENABLE_METRICS)
 endif()
 
 find_package(Threads REQUIRED)
+
+# hash_compat_driver — small CLI that reads (prev_hash_hex, token_ids)
+# on stdin and prints BLAKE3-chained-block-hash hex per line. Used by
+# tests/correctness/test_hash_compat.py to assert the C++ and Python
+# implementations produce bit-identical digests (W0 invariant).
+add_executable(hash_compat_driver
+  ${CMAKE_SOURCE_DIR}/tools/hash_compat_driver.cpp)
+target_link_libraries(hash_compat_driver PRIVATE lethe_blake3 Threads::Threads)
+target_include_directories(hash_compat_driver PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${LETHE_BLAKE3_DIR})
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(hash_compat_driver PRIVATE -Werror)
+endif()

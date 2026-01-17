@@ -14,7 +14,7 @@ namespace lethe {
 
 Membership::Membership(MembershipConfig cfg,
                        std::string local_node_id,
-                       std::vector<std::string> seed_peers,
+                       std::vector<StaticPeer> seed_peers,
                        Router* router,
                        Replicator* replicator)
     : cfg_(cfg),
@@ -22,13 +22,14 @@ Membership::Membership(MembershipConfig cfg,
       router_(router),
       replicator_(replicator) {
   auto now = std::chrono::steady_clock::now();
-  for (auto& peer_id : seed_peers) {
+  for (auto& peer : seed_peers) {
     PeerInfo info;
-    info.node_id = peer_id;
+    info.node_id = peer.node_id;
+    info.address = peer.address;
     info.last_seen = now;
     info.last_seen_epoch = 0;
     info.alive = true;
-    peers_.emplace(peer_id, std::move(info));
+    peers_.emplace(info.node_id, std::move(info));
   }
 }
 

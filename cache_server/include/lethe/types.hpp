@@ -90,6 +90,17 @@ struct PeerStatus {
   bool suspected = false;         // proto field 3
 };
 
+// A peer entry in the static seed list (W3-W4): node_id is what the
+// hash ring routes on, address is the host:port gRPC dial string the
+// Replicator uses to open a channel. The two are decoupled because
+// node_id is a stable identity (used in BlockId routing) while the
+// address is a transport detail; in W8+ the same node_id might
+// migrate to a new address.
+struct StaticPeer {
+  std::string node_id;
+  std::string address;            // "host:port"
+};
+
 // Reply payload for a Heartbeat RPC. Mirrors proto/lethe.proto
 // `message HeartbeatResponse` field-for-field:
 //

@@ -36,7 +36,10 @@ class Metrics;
 
 struct CacheConfig {
   std::string node_id;
-  std::vector<std::string> seed_peers;       // for membership bootstrap
+  // Static peer set (W3-W4: immutable for process lifetime; W8 makes
+  // this dynamic via heartbeat-driven membership). Each entry binds a
+  // routing identity (node_id) to a transport address (host:port).
+  std::vector<StaticPeer> seed_peers;
 
   // Capacities per tier (bytes).
   std::size_t hbm_bytes = 0;                 // set to 0 to disable HBM tier

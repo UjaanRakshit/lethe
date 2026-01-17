@@ -34,7 +34,11 @@ from lethe_client.routing import HashRing, chained_block_hash, _HASH
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DRIVER_PATH = REPO_ROOT / "build" / "tests" / "hash_compat_driver"
+# The driver binary is built under cache_server/CMakeLists.txt and
+# lands at build/cache_server/hash_compat_driver. (Earlier scaffold
+# guessed build/tests/hash_compat_driver; corrected to the actual
+# build location.)
+DRIVER_PATH = REPO_ROOT / "build" / "cache_server" / "hash_compat_driver"
 
 
 # BLAKE3 published test vectors. If `blake3` ever changes algorithm or
@@ -112,13 +116,50 @@ def test_cpp_python_chained_hash_agree():
     """Hand the C++ driver `(prev_hex tokens...)` lines on stdin; expect
     one hex digest per line back. Both sides must produce identical
     bytes — this is the load-bearing cross-language assertion."""
+    # ≥20 vectors per the W3-W4 acceptance: empty / single / multi-
+    # block sizes, block_size boundaries (1, 15, 16, 17, 32, 33),
+    # and large/edge uint32 token values. Each pair drives one
+    # chained_block_hash call (one block-worth of tokens).
     cases: list[tuple[bytes, list[int]]] = [
+        # Empty + minimal.
         (bytes(32), []),
+        (bytes(32), [0]),
         (bytes(32), [1]),
-        (bytes(32), [0, 1, 2, 3, 4, 5, 6, 7]),
+        # Around the W1 block_size=16 boundary.
+        (bytes(32), list(range(1))),
+        (bytes(32), list(range(15))),
+        (bytes(32), list(range(16))),
+        (bytes(32), list(range(17))),
+        (bytes(32), list(range(32))),
+        (bytes(32), list(range(33))),
+        # Distinct prev_hash values.
         (b"\xff" * 32, [0xDEADBEEF, 0xCAFEBABE]),
+        (b"\x42" * 32, list(range(64))),
         (bytes(range(32)), list(range(64))),
+        (bytes(range(31, -1, -1)), list(range(8))),
+        # uint32 boundary values.
+        (bytes(32), [0, 1, 0xFFFF, 0x10000, 0xFFFFFFFE, 0xFFFFFFFF]),
+        # Large blocks.
+        (bytes(32), list(range(256))),
+        (bytes(32), list(range(1024))),
+        # Some adversarial-looking inputs.
+        (bytes(32), [42] * 16),
+        (bytes(32), [0] * 64),
+        (bytes(32), [0xFFFFFFFF] * 16),
+        # Realistic-shaped tokens (mimics Gemma tokenizer values).
+        (bytes(32), [2, 1542, 8743, 12345, 999, 0, 4]),
+        (bytes(32),
+         [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]),
+        # A chain extension: hash this with a non-zero prev_hash.
+        (
+            bytes.fromhex(
+                "deadbeefcafebabe0123456789abcdef"
+                "fedcba9876543210babecafebeefdead"
+            ),
+            list(range(48)),
+        ),
     ]
+    assert len(cases) >= 20, f"need ≥20 cross-language vectors, have {len(cases)}"
     stdin_lines = []
     for prev, tokens in cases:
         stdin_lines.append(prev.hex() + " " + " ".join(str(t) for t in tokens))
