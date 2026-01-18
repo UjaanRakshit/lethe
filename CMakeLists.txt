@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(lethe LANGUAGES CXX)
+project(lethe LANGUAGES CXX C)  # C for vendored BLAKE3 reference impl
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
