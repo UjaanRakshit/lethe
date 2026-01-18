@@ -78,7 +78,8 @@ void TestHeartbeatReplyMirrorsPeerStatus() {
   // Sanity: every PeerStatus in the reply has the suspected bit set
   // to its current value (false after a successful heartbeat).
   lethe::MembershipConfig cfg;
-  lethe::Membership m(cfg, "node_self", {"nodeA"}, nullptr, nullptr);
+  lethe::Membership m(cfg, "node_self",
+                      {{"nodeA", "127.0.0.1:0"}}, nullptr, nullptr);
 
   auto reply = m.OnHeartbeat("nodeA", 0);
   bool found = false;

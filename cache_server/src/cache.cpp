@@ -1,10 +1,28 @@
-// Lethe — top-level cache facade (W1).
+// Lethe — top-level cache facade (W1 → W3-W4).
 //
-// Scope right now: single-node, DRAM-only. The facade owns a
-// TieredStore and delegates Lookup/Insert to it; Router, Replicator,
-// Evictor, Membership, transport, and Metrics all stay null until
-// their respective weeks (W3, W4, W8, W5-6, W10). Any code path that
-// needs them is either no-op'd or guarded by a null check.
+// W1 scope was single-node, DRAM-only. W3 adds Router (consistent
+// hash, owns ring) and Membership (holds the static peer table,
+// returns it on heartbeat). W4 adds Replicator (async push to
+// replica successors + read-repair pull from primary on local
+// miss). Evictor, transport, and Metrics remain stubbed until
+// their respective weeks (W8, W5-6, W10).
+//
+// Routing semantics:
+//   - Insert: write LOCALLY first, ACK to caller. If Replicator
+//     is present and we are primary, kick off async ReplicateOut
+//     to the R-1 successors. Inserts on a non-primary node still
+//     write locally (W1 behavior) — the W4 client routes to the
+//     primary, but the proto allows out-of-band Inserts and we
+//     accept them so the server doesn't reject the gRPC.
+//   - Lookup: per-block routing. If local IS primary and we have
+//     it → LocalHit. If local is primary but miss → try read-
+//     repair against the R-1 replicas. If local is a replica
+//     (not primary) and we have it → LocalHit (free hit; the
+//     primary may not even know). Otherwise → RemoteHit pointing
+//     at primary, OR Miss if there's no Router yet.
+//   - IngestStreamedBlock: stores blindly into the local tier.
+//     The push-shaped flows (replication, read-repair pull,
+//     prefill→decode) all land here.
 //
 // Lifetime contract (cache.hpp:81-86): LookupResult::Entry::local_data
 // is a borrowed span into TieredStore's BlockStore. The gRPC service
@@ -38,9 +56,35 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   ts.ssd_path = cfg_.ssd_path;
   store_ = std::make_unique<TieredStore>(std::move(ts));
 
-  // Router/Replicator/Evictor/Membership/transport/metrics: deferred.
-  // The unique_ptrs default-construct to null; cluster_epoch() and
-  // OnHeartbeat handle the null Membership case below.
+  // W3: Router built from the static peer set. The static set always
+  // includes the local node (main.cpp injects it before constructing
+  // CacheConfig). Empty seed_peers → single-node mode; Router has no
+  // peers and Lookup falls back to LocalHit/Miss only.
+  router_ = std::make_unique<Router>(
+      cfg_.node_id,
+      cfg_.virtual_nodes_per_peer,
+      cfg_.replication_factor);
+  if (!cfg_.seed_peers.empty()) {
+    std::vector<std::string> peer_ids;
+    peer_ids.reserve(cfg_.seed_peers.size());
+    for (const auto& p : cfg_.seed_peers) peer_ids.push_back(p.node_id);
+    router_->SetPeers(std::move(peer_ids));
+  }
+
+  // W3: Membership constructed with the static peer set. W3-W4 treats
+  // OnHeartbeat as a peer-list view only (no failure detection, no
+  // epoch advancing). W8 adds the heartbeat loop. Pass router_ and
+  // (future) replicator_ pointers for W8's membership-change driving.
+  MembershipConfig mcfg{};
+  membership_ = std::make_unique<Membership>(
+      mcfg,
+      cfg_.node_id,
+      cfg_.seed_peers,
+      router_.get(),
+      /*replicator=*/nullptr);  // W4 wires this when Replicator is built.
+
+  // Replicator: W4 (next commits) constructs and wires it in.
+  // Evictor/transport/metrics: still deferred to their weeks.
 }
 
 LetheCache::~LetheCache() {
@@ -66,18 +110,39 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
   for (const auto& id : ids) {
     LookupResult::Entry e;
     e.id = id;
+
+    // First branch: try the local store. A LocalHit short-circuits
+    // even if this node isn't the primary for the block — having the
+    // bytes locally is better than a network round-trip.
     if (auto got = store_->Get(id); got.has_value()) {
       e.where = LookupResult::Entry::Where::LocalHit;
       e.tier = got->tier_found;
       e.local_data = got->data;
       ++result.hit_count;
-    } else {
-      // W1: no router → no RemoteHit and no read-repair. Strictly Miss.
-      // W3 wires Router::IsLocalPrimary in here; W4 adds the
-      // Replicator::FetchFromAny read-repair branch.
-      e.where = LookupResult::Entry::Where::Miss;
-      ++result.miss_count;
+      result.entries.push_back(e);
+      continue;
     }
+
+    // Local miss. Consult the Router. If we are the primary, the W4
+    // read-repair branch will try to fetch from a replica before
+    // accepting a miss; that lands in the next commit. If we are NOT
+    // the primary, report RemoteHit with the primary's node_id and
+    // let the client batch-fetch from the source.
+    if (router_) {
+      const auto route = router_->Route(id);
+      if (!route.primary.empty() && route.primary != cfg_.node_id) {
+        e.where = LookupResult::Entry::Where::RemoteHit;
+        e.remote_node = route.primary;
+        ++result.hit_count;  // counts as "located"; bytes come via Fetch
+        result.entries.push_back(e);
+        continue;
+      }
+      // route.primary == cfg_.node_id: we ARE primary but missed.
+      // W4 will fall through to read-repair via FetchFromAny here.
+    }
+
+    e.where = LookupResult::Entry::Where::Miss;
+    ++result.miss_count;
     result.entries.push_back(e);
   }
   return result;
