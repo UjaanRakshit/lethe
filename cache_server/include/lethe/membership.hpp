@@ -114,12 +114,15 @@ class Membership {
   std::string local_node_id_;
   // router_/replicator_ are populated in the ctor for W8's use (gossip
   // convergence drives Router::SetPeers and Replicator::
-  // TriggerReReplication on membership change). W1 stores the pointers
-  // but never reads them. Mark [[maybe_unused]] so clang's
-  // -Wunused-private-field (promoted to error by -Werror) doesn't
-  // reject the W1 build — the fields are intentionally dormant.
-  [[maybe_unused]] Router* router_;
-  [[maybe_unused]] Replicator* replicator_;
+  // TriggerReReplication on membership change). W3-W4 still doesn't
+  // read them from inside Membership — LetheCache talks to Router and
+  // Replicator directly for routing + repair. The ctor body does a
+  // single `(void)router_; (void)replicator_;` to satisfy clang's
+  // -Wunused-private-field without paying the cross-compiler quirk
+  // of [[maybe_unused]] on a data member (GCC warns
+  // -Wattributes "attribute ignored").
+  Router* router_;
+  Replicator* replicator_;
 
   mutable std::mutex mu_;
   std::unordered_map<std::string, PeerInfo> peers_;

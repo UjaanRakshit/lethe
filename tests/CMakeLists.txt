@@ -42,8 +42,13 @@ set(_lethe_test_link_srcs
 function(lethe_add_unit_test name source)
   add_executable(${name} ${source} ${_lethe_test_link_srcs})
   target_include_directories(${name} PRIVATE
-    ${CMAKE_SOURCE_DIR}/cache_server/include)
-  target_link_libraries(${name} PRIVATE Threads::Threads)
+    ${CMAKE_SOURCE_DIR}/cache_server/include
+    # routing.cpp (compiled into every unit test via _lethe_test_link_srcs)
+    # includes blake3_helper.hpp which #includes blake3.h. Match the
+    # include path used by the lethe_server target.
+    ${CMAKE_SOURCE_DIR}/cache_server/third_party/blake3
+    ${CMAKE_SOURCE_DIR}/cache_server/src)
+  target_link_libraries(${name} PRIVATE Threads::Threads lethe_blake3)
   # Force NDEBUG off so assert() actually executes under RelWithDebInfo.
   # Top-level CMakeLists defaults to RelWithDebInfo which defines NDEBUG,
   # which would compile every assert() in the test bodies to a no-op

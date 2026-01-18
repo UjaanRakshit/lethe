@@ -21,6 +21,13 @@ Membership::Membership(MembershipConfig cfg,
       local_node_id_(std::move(local_node_id)),
       router_(router),
       replicator_(replicator) {
+  // Stash for W8 (membership change → router rebuild + re-
+  // replication). W3-W4 never reads these from Membership; this
+  // (void) cast tells the compiler "I know, I'll use it later"
+  // without the cross-compiler quirks of [[maybe_unused]] on a
+  // class member. See membership.hpp for the longer note.
+  (void)router_;
+  (void)replicator_;
   auto now = std::chrono::steady_clock::now();
   for (auto& peer : seed_peers) {
     PeerInfo info;
