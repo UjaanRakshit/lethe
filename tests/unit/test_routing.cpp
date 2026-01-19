@@ -24,6 +24,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <unistd.h>  // for ::write, ::close — used by the popen driver harness
 #include <unordered_map>
 #include <vector>
 
