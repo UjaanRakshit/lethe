@@ -31,24 +31,46 @@ set(_lethe_test_link_srcs
   ${CMAKE_SOURCE_DIR}/cache_server/src/tiered_store.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/cache.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/membership.cpp
-  # Subsystem stubs included so cache.cpp's null unique_ptr<X> dtors
-  # link cleanly without requiring the full impl.
   ${CMAKE_SOURCE_DIR}/cache_server/src/routing.cpp
+  # W4: replication.cpp pulls in lethe.grpc.pb.h, so test targets need
+  # the generated proto sources + include dir + gRPC link too. Wired
+  # below per-target.
   ${CMAKE_SOURCE_DIR}/cache_server/src/replication.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/eviction.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/metrics.cpp
 )
 
 function(lethe_add_unit_test name source)
-  add_executable(${name} ${source} ${_lethe_test_link_srcs})
+  # The generated proto sources are added as inputs to every unit
+  # test because replication.cpp (in _lethe_test_link_srcs) calls
+  # the gRPC stubs. We depend on lethe_proto_gen so the .cc files
+  # exist before this target compiles.
+  add_executable(${name} ${source} ${_lethe_test_link_srcs}
+    ${LETHE_PROTO_GENERATED_SRCS})
+  add_dependencies(${name} lethe_proto_gen)
   target_include_directories(${name} PRIVATE
     ${CMAKE_SOURCE_DIR}/cache_server/include
     # routing.cpp (compiled into every unit test via _lethe_test_link_srcs)
     # includes blake3_helper.hpp which #includes blake3.h. Match the
     # include path used by the lethe_server target.
     ${CMAKE_SOURCE_DIR}/cache_server/third_party/blake3
-    ${CMAKE_SOURCE_DIR}/cache_server/src)
-  target_link_libraries(${name} PRIVATE Threads::Threads lethe_blake3)
+    ${CMAKE_SOURCE_DIR}/cache_server/src
+    # W4: generated proto headers, same path lethe_server uses.
+    ${LETHE_PROTO_GEN_DIR})
+  target_link_libraries(${name} PRIVATE
+    Threads::Threads
+    lethe_blake3
+    # W4: gRPC + protobuf for the replication.cpp client calls.
+    gRPC::grpc++
+    protobuf::libprotobuf)
+  # Generated proto sources can carry warnings auto-emitted code we
+  # can't fix; strip -Werror promotion for them (mirrors the
+  # lethe_server target).
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+      ${LETHE_PROTO_GENERATED_SRCS}
+      PROPERTIES COMPILE_OPTIONS "-Wno-error")
+  endif()
   # Force NDEBUG off so assert() actually executes under RelWithDebInfo.
   # Top-level CMakeLists defaults to RelWithDebInfo which defines NDEBUG,
   # which would compile every assert() in the test bodies to a no-op
