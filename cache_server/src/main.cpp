@@ -15,6 +15,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -230,17 +231,58 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
 // main
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Parse a comma-separated peer list in the format
+// `node_id@host:port,node_id@host:port,...`. Empty input → empty
+// vector (single-node mode). Entries equal to local_node_id are
+// silently filtered (they'd point at ourselves).
+std::vector<lethe::StaticPeer> ParsePeerList(const std::string& spec,
+                                              const std::string& local_node_id) {
+  std::vector<lethe::StaticPeer> out;
+  if (spec.empty()) return out;
+  std::istringstream iss(spec);
+  std::string item;
+  while (std::getline(iss, item, ',')) {
+    if (item.empty()) continue;
+    const auto at = item.find('@');
+    if (at == std::string::npos) {
+      std::cerr << "[lethe] --peers: skipping malformed entry "
+                << item << " (expected node_id@host:port)\n";
+      continue;
+    }
+    std::string node_id = item.substr(0, at);
+    std::string address = item.substr(at + 1);
+    if (node_id == local_node_id) continue;  // skip self
+    out.push_back(lethe::StaticPeer{node_id, address});
+  }
+  return out;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
+  // CLI: positional [node_id] [port] + optional --peers <spec>.
+  // Format chosen for the run_3node.sh script's simplicity; argparse
+  // would be heavier than this needs to be at W4 scope.
   lethe::CacheConfig cfg;
   cfg.node_id = (argc > 1) ? argv[1] : "node0";
   if (argc > 2) {
     cfg.grpc_port = static_cast<std::uint16_t>(std::stoi(argv[2]));
   }
-  // W3+ : seed peers via argv[3] (comma-separated).
-  // W5-6: RDMA toggle via argv[4].
+  std::string peers_spec;
+  for (int i = 3; i < argc; ++i) {
+    std::string a = argv[i];
+    if (a == "--peers" && i + 1 < argc) {
+      peers_spec = argv[++i];
+    } else if (a.rfind("--peers=", 0) == 0) {
+      peers_spec = a.substr(8);
+    }
+  }
+  cfg.seed_peers = ParsePeerList(peers_spec, cfg.node_id);
 
   // W1: keep capacity defaults small enough to fit on a laptop. The
   // hard rule is "default builds don't link ibverbs"; the soft choice
@@ -250,7 +292,11 @@ int main(int argc, char** argv) {
 
   std::cout << "[lethe] node=" << cfg.node_id
             << " grpc=" << cfg.grpc_port
-            << " dram=" << (cfg.dram_bytes >> 20) << "MiB\n";
+            << " dram=" << (cfg.dram_bytes >> 20) << "MiB"
+            << " peers=" << cfg.seed_peers.size() << "\n";
+  for (const auto& p : cfg.seed_peers) {
+    std::cout << "[lethe]   peer " << p.node_id << " @ " << p.address << "\n";
+  }
 
   auto cache = std::make_unique<lethe::LetheCache>(cfg);
   cache->Start();

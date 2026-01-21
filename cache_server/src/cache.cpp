@@ -32,6 +32,7 @@
 
 #include "lethe/cache.hpp"
 
+#include <algorithm>
 #include <utility>
 
 // Every forward-declared subsystem in cache.hpp needs its complete
@@ -71,19 +72,29 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
     router_->SetPeers(std::move(peer_ids));
   }
 
+  // W4: Replicator must exist BEFORE Membership (Membership holds a
+  // pointer to it for W8's membership-change re-replication driving).
+  // The Replicator's connection pool is populated lazily here from the
+  // static peer set so ReplicateOut on the very first Insert can route
+  // immediately (no warm-up RPC needed).
+  replicator_ = std::make_unique<Replicator>(
+      cfg_.node_id, router_.get(), store_.get());
+  for (const auto& p : cfg_.seed_peers) {
+    if (p.node_id == cfg_.node_id) continue;
+    replicator_->EnsurePeerClient(p.node_id, p.address);
+  }
+
   // W3: Membership constructed with the static peer set. W3-W4 treats
   // OnHeartbeat as a peer-list view only (no failure detection, no
-  // epoch advancing). W8 adds the heartbeat loop. Pass router_ and
-  // (future) replicator_ pointers for W8's membership-change driving.
+  // epoch advancing). W8 adds the heartbeat loop.
   MembershipConfig mcfg{};
   membership_ = std::make_unique<Membership>(
       mcfg,
       cfg_.node_id,
       cfg_.seed_peers,
       router_.get(),
-      /*replicator=*/nullptr);  // W4 wires this when Replicator is built.
+      replicator_.get());
 
-  // Replicator: W4 (next commits) constructs and wires it in.
   // Evictor/transport/metrics: still deferred to their weeks.
 }
 
@@ -123,22 +134,59 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
       continue;
     }
 
-    // Local miss. Consult the Router. If we are the primary, the W4
-    // read-repair branch will try to fetch from a replica before
-    // accepting a miss; that lands in the next commit. If we are NOT
-    // the primary, report RemoteHit with the primary's node_id and
-    // let the client batch-fetch from the source.
+    // Local miss. Consult the Router.
     if (router_) {
       const auto route = router_->Route(id);
+      const bool we_are_primary =
+          !route.primary.empty() && route.primary == cfg_.node_id;
+      const bool we_are_in_route =
+          we_are_primary ||
+          std::any_of(route.replicas.begin(), route.replicas.end(),
+                      [&](const std::string& p) { return p == cfg_.node_id; });
+
+      // Read-repair branch: we are in the route (primary or replica)
+      // but locally missed. Try FetchFromAny against the other peers
+      // in the route. On success, write locally + return as LocalHit.
+      // On failure, fall through to Miss.
+      if (we_are_in_route && replicator_ != nullptr) {
+        std::vector<std::string> repair_peers;
+        if (route.primary != cfg_.node_id && !route.primary.empty()) {
+          repair_peers.push_back(route.primary);
+        }
+        for (const auto& p : route.replicas) {
+          if (p != cfg_.node_id) repair_peers.push_back(p);
+        }
+        if (!repair_peers.empty()) {
+          auto fetched = replicator_->FetchFromAny(id, repair_peers);
+          if (fetched.has_value()) {
+            // Repair: write to local store. ID was preserved by
+            // FetchFromAny so the next Get will hit.
+            store_->Put(*fetched, Tier::DRAM);
+            // Re-fetch the local span so the returned local_data
+            // points at the freshly-stored copy (not the moved-from
+            // local).
+            if (auto repaired = store_->Get(id); repaired.has_value()) {
+              e.where = LookupResult::Entry::Where::LocalHit;
+              e.tier = repaired->tier_found;
+              e.local_data = repaired->data;
+              ++result.hit_count;
+              result.entries.push_back(e);
+              continue;
+            }
+          }
+        }
+      }
+
+      // Not in the route (e.g. client's ring was stale during a
+      // membership change). Report RemoteHit pointing at the primary
+      // so the client can re-route.
       if (!route.primary.empty() && route.primary != cfg_.node_id) {
         e.where = LookupResult::Entry::Where::RemoteHit;
         e.remote_node = route.primary;
-        ++result.hit_count;  // counts as "located"; bytes come via Fetch
+        ++result.hit_count;
         result.entries.push_back(e);
         continue;
       }
-      // route.primary == cfg_.node_id: we ARE primary but missed.
-      // W4 will fall through to read-repair via FetchFromAny here.
     }
 
     e.where = LookupResult::Entry::Where::Miss;
@@ -152,21 +200,30 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
                                  const std::string& /*request_id*/,
                                  const std::string& /*source_node*/,
                                  InsertOptions /*opts*/) {
-  // W1: no replication (replicator_ is null). The opts.sync_replicate
-  // flag is accepted but has no effect; W4 lights up real semantics.
+  // W4 async replication: write locally first → ACK to caller → kick
+  // off background ReplicateOut. opts.sync_replicate is still accepted
+  // but unimplemented; the W0 decision (async by default) holds. If
+  // we ever need sync replication (e.g. for chaos's "durability
+  // before ACK" assertion), that path lights up here under the
+  // opts.sync_replicate guard.
   std::uint32_t accepted = 0;
   for (auto& blk : blocks) {
-    // BlockStore::Put returns false on capacity overflow; we treat
-    // that as a rejection (Insert returns the accepted count).
     const std::size_t before = store_->used_bytes(Tier::DRAM);
+    // Save a copy of the block for the replication queue BEFORE we
+    // std::move it into the local store. The replication task needs
+    // its own owned bytes since it runs after Insert returns.
+    KvBlock to_replicate = blk;
     store_->Put(std::move(blk), Tier::DRAM);
     const std::size_t after = store_->used_bytes(Tier::DRAM);
-    if (after > before) ++accepted;
-    else {
-      // Either the block was already present (idempotent Put) or the
-      // store was full. Both cases count as "did not newly accept";
-      // a future audit may want to distinguish these — for now the
-      // count semantics match the gRPC accepted_count proto field.
+    if (after > before) {
+      ++accepted;
+      if (replicator_ != nullptr) {
+        // Fire-and-forget. ReplicateOut returns the peer_ids it
+        // queued the push to; we don't wait. Failures are logged
+        // via the Replicator's overflow_drops / replicate_failures
+        // counters (W10 will surface these as metrics).
+        replicator_->ReplicateOut(to_replicate);
+      }
     }
   }
   return accepted;
