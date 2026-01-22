@@ -1,30 +1,62 @@
 """gRPC client for the Lethe cache server.
 
 Thin wrapper over the generated lethe_pb2 / lethe_pb2_grpc stubs
-(produced by `scripts/build.sh` or `python -m grpc_tools.protoc`).
+(produced by `scripts/build.sh`).
 
-The wire protocol is proto/lethe.proto. This client targets:
+The wire protocol is `proto/lethe.proto`. Targets:
   * Lookup       — metadata-only check for cache presence.
   * Insert       — push KV blocks into the cache.
-  * Fetch        — pull a single block's bytes (W1 roundtrip path).
+  * Fetch        — pull a single block's bytes.
   * StreamBlocks — bulk push of blocks (used by W4+ replication).
 
-W3+ multi-node: pass `peers=[(node_id, address), ...]` and the client
-mirrors the server-side hash ring to pre-route each block. W1 uses
-`primary_address` only.
+W1: single-node mode. Pass `primary_address` only; every RPC hits
+that one node.
+
+W4 multi-node: pass `peers=[(node_id, address), ...]`. The client
+builds a `HashRing` (bit-compatible with the C++ Router per the W0
+invariant) and routes every Lookup per-block to its primary owner,
+batching block_ids that share a primary into one RPC. Inserts hit
+the local node only — the server-side Replicator handles cross-node
+pushes. On a Lookup response that returns RemoteHit, the client
+transparently calls Fetch against the source_node and stitches the
+bytes into the result.
+
+Failure semantics (CLAUDE.md rule 2: never block scheduling on cache
+liveness):
+  * Transient gRPC errors (UNAVAILABLE / DEADLINE_EXCEEDED) retry up
+    to 3 times with 50 ms × 2^attempt backoff. Other status codes
+    surface as Miss for the affected blocks and do not raise.
+  * Cross-node Fetch failure during transparent fetch: the block is
+    reclassified as Miss; the connector / caller recomputes.
+  * The lookup / fetch APIs NEVER raise grpc.RpcError into the
+    caller. They always return a `LookupResult` (possibly with all
+    misses) or a bytes-or-None for fetch.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 import grpc
 
 from . import lethe_pb2, lethe_pb2_grpc
+from .routing import HashRing
 
 logger = logging.getLogger(__name__)
+
+
+# Retry policy. Tuned per the W4 prompt: 3 attempts, 50 ms × 2^n
+# exponential, UNAVAILABLE-only. Other RPC failures fall through
+# as Miss / None rather than raising into the connector's stack.
+_RETRY_CODES = {
+    grpc.StatusCode.UNAVAILABLE,
+    grpc.StatusCode.DEADLINE_EXCEEDED,
+}
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_SECONDS = 0.050
 
 
 @dataclass(frozen=True)
@@ -48,6 +80,10 @@ class LookupHit:
 class LookupResult:
     hits: list[LookupHit] = field(default_factory=list)
     misses: list[BlockId] = field(default_factory=list)
+    # W4: when the client transparently fetches RemoteHit bytes, the
+    # payload lands here keyed by hash. None entries are blocks that
+    # were RemoteHit but the follow-up Fetch failed (treat as Miss).
+    fetched: dict[bytes, Optional[bytes]] = field(default_factory=dict)
 
     @property
     def hit_rate(self) -> float:
@@ -74,8 +110,25 @@ def _from_proto_block_id(pb: lethe_pb2.BlockId) -> BlockId:
 
 
 class LetheClient:
-    """Synchronous gRPC client. Use one instance per process; gRPC
-    channels are themselves thread-safe.
+    """Synchronous gRPC client. Thread-safe for concurrent Lookup /
+    Insert / Fetch calls (gRPC Channels are themselves thread-safe).
+
+    Single-node usage:
+        LetheClient("127.0.0.1:50051")
+
+    Multi-node usage (W4):
+        LetheClient(
+            primary_address="127.0.0.1:50051",  # any reachable node
+            peers=[("node0", "127.0.0.1:50051"),
+                   ("node1", "127.0.0.1:50052"),
+                   ("node2", "127.0.0.1:50053")],
+        )
+
+    When ``peers`` is non-empty, Lookup routes per-block via a local
+    ``HashRing`` that mirrors the server's Router. ``primary_address``
+    is still used for Insert (the server-side Replicator handles
+    cross-node fanout) and as a fallback when routing produces no
+    primary (empty peer set or unknown peer).
     """
 
     def __init__(
@@ -85,12 +138,18 @@ class LetheClient:
         timeout_seconds: float = 5.0,
     ):
         self.primary_address = primary_address
-        self.peers = dict(peers or [])
+        self.peers: dict[str, str] = dict(peers or [])
         self.timeout_seconds = timeout_seconds
         self._channels: dict[str, grpc.Channel] = {}
         self._stubs: dict[str, lethe_pb2_grpc.LetheCacheStub] = {}
+        # HashRing built from the peer set. Empty peers → empty ring
+        # → routing falls back to primary_address. The ring is
+        # bit-compatible with the C++ Router per the W0 invariant.
+        self._ring: Optional[HashRing] = None
+        if self.peers:
+            self._ring = HashRing(list(self.peers.keys()))
 
-    # ---- Channel management ----------------------------------------------
+    # ---- Channel / stub management ---------------------------------------
 
     def _stub(self, address: Optional[str] = None) -> lethe_pb2_grpc.LetheCacheStub:
         addr = address or self.primary_address
@@ -99,6 +158,13 @@ class LetheClient:
             self._channels[addr] = ch
             self._stubs[addr] = lethe_pb2_grpc.LetheCacheStub(ch)
         return self._stubs[addr]
+
+    def _stub_for_node(self, node_id: str) -> Optional[lethe_pb2_grpc.LetheCacheStub]:
+        """Stub for a node_id, or None if we have no address for it."""
+        addr = self.peers.get(node_id)
+        if not addr:
+            return None
+        return self._stub(addr)
 
     def close(self) -> None:
         for ch in self._channels.values():
@@ -112,6 +178,44 @@ class LetheClient:
     def __exit__(self, *_) -> None:
         self.close()
 
+    # ---- Retry helper ----------------------------------------------------
+
+    def _call_with_retry(self, rpc_callable):
+        """Run an RPC closure with the W4 retry policy. Returns the
+        response on success; returns None on terminal failure (the
+        caller decides how to surface it — Miss for Lookup, None for
+        Fetch, etc.).
+
+        ``rpc_callable`` is a no-arg lambda that issues one RPC. It
+        may raise grpc.RpcError; the helper catches and either
+        retries (UNAVAILABLE / DEADLINE_EXCEEDED) or gives up.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                return rpc_callable()
+            except grpc.RpcError as e:
+                last_exc = e
+                code = e.code() if hasattr(e, "code") else None
+                if code not in _RETRY_CODES:
+                    logger.warning(
+                        "Lethe RPC failed (non-retryable code=%s): %s",
+                        code, e.details() if hasattr(e, "details") else e,
+                    )
+                    return None
+                if attempt + 1 < _MAX_ATTEMPTS:
+                    sleep = _BACKOFF_BASE_SECONDS * (2 ** attempt)
+                    logger.debug(
+                        "Lethe RPC retry %d/%d on code=%s, sleep=%.3fs",
+                        attempt + 1, _MAX_ATTEMPTS - 1, code, sleep,
+                    )
+                    time.sleep(sleep)
+        logger.warning(
+            "Lethe RPC failed after %d attempts: %s",
+            _MAX_ATTEMPTS, last_exc,
+        )
+        return None
+
     # ---- Public API ------------------------------------------------------
 
     def lookup(
@@ -121,23 +225,94 @@ class LetheClient:
         requesting_node: str = "client",
         address: Optional[str] = None,
     ) -> LookupResult:
-        req = lethe_pb2.LookupRequest(
-            block_ids=[_to_proto_block_id(b) for b in block_ids],
-            request_id=request_id,
-            requesting_node=requesting_node,
-        )
-        resp = self._stub(address).Lookup(req, timeout=self.timeout_seconds)
-        return LookupResult(
-            hits=[
-                LookupHit(
+        """Resolve block IDs against the cluster.
+
+        In multi-node mode, partitions ``block_ids`` by primary owner
+        via the HashRing and issues ONE RPC per distinct primary
+        (not one RPC per block). Per-block batching is mandatory:
+        long-context Lookups against R=2 with 128 vnodes will see
+        ~3 distinct primaries on a 3-node cluster, so the wire cost
+        stays O(number-of-nodes), not O(number-of-blocks).
+
+        On RemoteHit response from a node, transparently issue a
+        Fetch RPC against the named source_node and stitch the bytes
+        into ``LookupResult.fetched``. Fetch failures degrade to
+        Miss for that block.
+
+        Never raises. RPC failure for an entire primary group →
+        every block in that group is reported as Miss.
+        """
+        ids = list(block_ids)
+        result = LookupResult()
+        if not ids:
+            return result
+
+        # Partition by primary. If no ring is configured OR a block's
+        # primary isn't in the peer map, route to primary_address.
+        groups: dict[Optional[str], list[BlockId]] = {}
+        for bid in ids:
+            primary_node: Optional[str] = None
+            if self._ring is not None:
+                routed = self._ring.route(bid.hash, n_replicas=1)
+                if routed and routed[0] in self.peers:
+                    primary_node = routed[0]
+            groups.setdefault(primary_node, []).append(bid)
+
+        # One RPC per distinct primary.
+        for primary_node, batch in groups.items():
+            stub = (
+                self._stub_for_node(primary_node)
+                if primary_node is not None
+                else self._stub(address)
+            )
+            if stub is None:
+                # No address for the resolved primary; treat the whole
+                # batch as Miss. Surface via logger so a stale peer
+                # configuration is visible.
+                logger.warning(
+                    "Lethe lookup: no peer address for node_id=%r; "
+                    "%d blocks routed to Miss", primary_node, len(batch),
+                )
+                for b in batch:
+                    result.misses.append(b)
+                continue
+
+            req = lethe_pb2.LookupRequest(
+                block_ids=[_to_proto_block_id(b) for b in batch],
+                request_id=request_id,
+                requesting_node=requesting_node,
+            )
+            resp = self._call_with_retry(
+                lambda s=stub, r=req: s.Lookup(r, timeout=self.timeout_seconds)
+            )
+            if resp is None:
+                # Whole batch failed. Surface as Miss; the caller
+                # decides whether to retry against a different node.
+                for b in batch:
+                    result.misses.append(b)
+                continue
+
+            # Local-style hits land directly; remote hits trigger a
+            # transparent Fetch.
+            for h in resp.hits:
+                hit = LookupHit(
                     block_id=_from_proto_block_id(h.id),
                     source_node=h.source_node,
                     tier=h.tier,
                 )
-                for h in resp.hits
-            ],
-            misses=[_from_proto_block_id(m) for m in resp.misses],
-        )
+                result.hits.append(hit)
+                # If the server returned a remote hit, fetch the bytes
+                # from source_node so the caller doesn't have to.
+                # The server itself returns LocalHit when it has the
+                # bytes locally (after a successful read-repair too);
+                # RemoteHit only surfaces when the server can't serve
+                # the bytes itself.
+                if h.source_node and h.source_node != self._local_label_for(stub):
+                    self._fetch_into_result(hit.block_id, h.source_node, result)
+            for m in resp.misses:
+                result.misses.append(_from_proto_block_id(m))
+
+        return result
 
     def insert(
         self,
@@ -147,7 +322,15 @@ class LetheClient:
         tier_hint: int = 1,
         address: Optional[str] = None,
     ) -> int:
-        """Insert prefill-produced KV blocks. Returns the count accepted."""
+        """Insert prefill-produced KV blocks. Returns the count accepted.
+
+        Multi-node: Insert hits ONE node (``address`` or
+        ``primary_address``); the server-side Replicator pushes to
+        the R-1 successors on the ring. We don't route Insert by
+        block on the client side — the wire cost would force the
+        client to know about every primary, and the server is more
+        efficient at the fanout.
+        """
         req = lethe_pb2.InsertRequest(
             blocks=[
                 lethe_pb2.InsertRequest.Block(
@@ -160,7 +343,12 @@ class LetheClient:
             request_id=request_id,
             source_node=source_node,
         )
-        resp = self._stub(address).Insert(req, timeout=self.timeout_seconds)
+        stub = self._stub(address)
+        resp = self._call_with_retry(
+            lambda: stub.Insert(req, timeout=self.timeout_seconds)
+        )
+        if resp is None:
+            return 0
         return int(resp.accepted_count)
 
     def fetch(
@@ -169,18 +357,51 @@ class LetheClient:
         requesting_node: str = "client",
         address: Optional[str] = None,
     ) -> Optional[bytes]:
-        """Pull a single block's bytes. Returns None on miss.
-
-        Pre-RDMA path (W1); for large bulk transfers the server uses
-        StreamBlocks instead. Roundtrip semantics: the bytes returned
-        here are an immutable copy — the cache's local span is never
-        exposed across the wire.
+        """Pull a single block's bytes. Returns None on miss or
+        terminal RPC failure. Roundtrip semantics: bytes are an
+        immutable copy — the cache's local span never crosses the
+        wire.
         """
         req = lethe_pb2.FetchRequest(
             id=_to_proto_block_id(block_id),
             requesting_node=requesting_node,
         )
-        resp = self._stub(address).Fetch(req, timeout=self.timeout_seconds)
-        if not resp.found:
+        stub = self._stub(address)
+        resp = self._call_with_retry(
+            lambda: stub.Fetch(req, timeout=self.timeout_seconds)
+        )
+        if resp is None or not resp.found:
             return None
         return bytes(resp.kv_data)
+
+    # ---- Internals -------------------------------------------------------
+
+    def _local_label_for(self, _stub) -> str:
+        # The client doesn't know its own "node identity"; this is a
+        # placeholder so the RemoteHit-triggered-Fetch path can avoid
+        # spinning on a hit whose source_node matches the queried
+        # node (which would mean a LocalHit dressed up — server-side
+        # code path already returns LocalHit in that case, so this
+        # branch is purely defensive).
+        return ""
+
+    def _fetch_into_result(
+        self,
+        block_id: BlockId,
+        source_node: str,
+        result: LookupResult,
+    ) -> None:
+        """Transparent fetch: dispatch a Fetch to source_node and
+        record the bytes (or None for failure) in result.fetched."""
+        if source_node not in self.peers:
+            # Server returned a source_node we don't have an address
+            # for (stale peer config on this client). Record a None.
+            logger.warning(
+                "Lethe lookup: RemoteHit source_node=%r unknown to client; "
+                "block reclassified as Miss", source_node,
+            )
+            result.fetched[block_id.hash] = None
+            return
+        addr = self.peers[source_node]
+        bytes_or_none = self.fetch(block_id, address=addr)
+        result.fetched[block_id.hash] = bytes_or_none
