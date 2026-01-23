@@ -143,10 +143,17 @@ class LetheCache {
   CacheConfig cfg_;
   std::unique_ptr<TieredStore> store_;
   std::unique_ptr<Router> router_;
+  // transport_ MUST outlive replicator_: Replicator's worker threads
+  // dispatch every peer-to-peer block movement through transport_->Send,
+  // so the transport must still be alive when those workers join in
+  // ~Replicator. C++ destroys members in REVERSE declaration order;
+  // hence transport_ is declared BEFORE replicator_ here. Don't
+  // re-order without re-reasoning about the worker-join → transport
+  // teardown race.
+  std::unique_ptr<KvTransport> transport_;
   std::unique_ptr<Replicator> replicator_;
   std::unique_ptr<Evictor> evictor_;
   std::unique_ptr<Membership> membership_;
-  std::unique_ptr<KvTransport> transport_;
   std::unique_ptr<Metrics> metrics_;
 
   std::atomic<bool> running_{false};

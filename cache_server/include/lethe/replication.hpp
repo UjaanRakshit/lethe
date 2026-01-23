@@ -6,12 +6,8 @@
 // the router for replica peers and issue parallel StreamBlocks pulls; if
 // any returns the block, we repair our local copy (read-repair).
 
-#include <future>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "lethe/types.hpp"
@@ -20,20 +16,24 @@ namespace lethe {
 
 class TieredStore;
 class Router;
-
-// Thin client handle for talking to a peer's LetheCache gRPC service. Owned
-// by Replicator; pooled per peer for connection reuse.
-class PeerClient;
+class KvTransport;
 
 class Replicator {
  public:
+  // W5-6: transport may be null for tests / single-node bring-up that
+  // don't exercise replication. When null, ReplicateOut returns an
+  // empty list and FetchFromAny returns nullopt without any RPC.
   Replicator(std::string local_node_id,
              Router* router,
-             TieredStore* store);
+             TieredStore* store,
+             KvTransport* transport);
   ~Replicator();
 
   // Push a block to all replica successors. Called from Insert after the
-  // local tier write succeeds. Returns the list of peers that ACKed.
+  // local tier write succeeds. Returns the list of peers the push was
+  // QUEUED to (not ACKed; the W4 async-replication policy is
+  // fire-and-forget — see docs/DECISIONS.md "Async replication policy
+  // realized").
   std::vector<std::string> ReplicateOut(const KvBlock& block);
 
   // Attempt to fetch a block from any of the named replica peers. Returns
@@ -46,17 +46,20 @@ class Replicator {
   // dead. Called by Membership on cluster epoch change (W8).
   void TriggerReReplication(const std::vector<std::string>& lost_peers);
 
-  // Connection pool management.
+  // Connection pool management. Delegates to the underlying KvTransport
+  // (each transport implementation manages its own per-peer state —
+  // gRPC channels for GrpcStreamTransport, RC QPs for IbverbsTransport).
+  // These remain on Replicator's public surface because LetheCache's
+  // ctor uses them to pre-populate the pool from the static seed list
+  // (so the first Insert doesn't pay a cold-channel-open RTT).
   void EnsurePeerClient(const std::string& peer_id, const std::string& address);
   void DropPeerClient(const std::string& peer_id);
 
  private:
   std::string local_node_id_;
-  Router* router_;          // not owned
-  TieredStore* store_;      // not owned
-
-  std::mutex pool_mu_;
-  std::unordered_map<std::string, std::unique_ptr<PeerClient>> peer_clients_;
+  Router* router_;            // not owned
+  TieredStore* store_;        // not owned
+  KvTransport* transport_;    // not owned; nullable for single-node tests
 };
 
 }  // namespace lethe

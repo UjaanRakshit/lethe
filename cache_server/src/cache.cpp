@@ -72,13 +72,29 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
     router_->SetPeers(std::move(peer_ids));
   }
 
+  // W5-6: transport built BEFORE Replicator (Replicator now delegates
+  // all peer-to-peer block movement through KvTransport). GATE #1 of
+  // W5-6 fired on WSL2 (no infiniband subsystem in the dev kernel),
+  // so we ship GrpcStreamTransport as the production data path. The
+  // IbverbsTransport class still exists but is a defined-symbol stub
+  // that aborts if constructed; the factory below never picks it
+  // because RdmaIsAvailable() is always-false in the absence of real
+  // hardware. See docs/decisions/W5_rdma_fallback.md.
+  RdmaConfig rdma_cfg;
+  rdma_cfg.device_name = cfg_.rdma_device;
+  rdma_cfg.listen_port = cfg_.rdma_port;
+  transport_ = std::make_unique<GrpcStreamTransport>(rdma_cfg,
+                                                     KvTransport::OnReceiveFn{});
+  transport_->Start();
+
   // W4: Replicator must exist BEFORE Membership (Membership holds a
   // pointer to it for W8's membership-change re-replication driving).
-  // The Replicator's connection pool is populated lazily here from the
-  // static peer set so ReplicateOut on the very first Insert can route
-  // immediately (no warm-up RPC needed).
+  // The transport's connection pool is populated here from the static
+  // peer set so ReplicateOut on the very first Insert can route
+  // immediately (no warm-up RPC needed). EnsurePeerClient delegates to
+  // transport_->Connect.
   replicator_ = std::make_unique<Replicator>(
-      cfg_.node_id, router_.get(), store_.get());
+      cfg_.node_id, router_.get(), store_.get(), transport_.get());
   for (const auto& p : cfg_.seed_peers) {
     if (p.node_id == cfg_.node_id) continue;
     replicator_->EnsurePeerClient(p.node_id, p.address);
@@ -109,8 +125,12 @@ void LetheCache::Start() {
 
 void LetheCache::Shutdown() {
   running_.store(false, std::memory_order_relaxed);
-  // W4+: tear down workers. Subsystem dtors run when the unique_ptrs
-  // are released by the destructor; for W1 they are all null.
+  // Close transport channels so any in-flight RPC unblocks. The
+  // worker-join happens during ~Replicator, which runs BEFORE
+  // ~KvTransport thanks to the field-declaration order in cache.hpp
+  // (transport_ declared first → destroyed last). transport_->Shutdown
+  // is idempotent; subsequent ~LetheCache calls find no peers to drop.
+  if (transport_) transport_->Shutdown();
 }
 
 LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,

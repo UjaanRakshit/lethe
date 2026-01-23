@@ -24,6 +24,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -43,6 +44,20 @@ struct RdmaConfig {
 
 // Abstract bulk-transport interface. No data members; all state lives in
 // the derived classes. Owners hold this by std::unique_ptr<KvTransport>.
+//
+// Two block-shaped operations are exposed:
+//   - Send: push semantics. Caller owns the bytes; transport stages /
+//           transmits / ACKs. Used for replication push and prefill→decode.
+//   - Fetch: pull semantics. Caller asks a peer for a known BlockId;
+//            transport returns the materialized block (or nullopt on
+//            miss / failure). Used for read-repair.
+//
+// Both return std::future so an ibverbs implementation can dispatch onto
+// its completion-polling thread without blocking the caller; the gRPC
+// implementation runs the work synchronously and returns a ready future.
+// Replicator's bounded queue + worker pool decides how many concurrent
+// Send/Fetch calls are in flight at once; the transport doesn't impose
+// its own concurrency cap.
 class KvTransport {
  public:
   using OnReceiveFn = std::function<void(BlockId, std::vector<std::byte>,
@@ -65,9 +80,25 @@ class KvTransport {
                                  BlockId id,
                                  StreamPurpose purpose,
                                  std::span<const std::byte> data) = 0;
+
+  // Fetch a single block from a peer by id. Returns the materialized
+  // block on hit, nullopt on miss or RPC failure. Per-call deadline is
+  // the implementation's choice (gRPC: 500ms; ibverbs: TBD when W12
+  // hardware arrives). Not connected to Send semantically — Fetch is
+  // a request/response shape; Send is fire-and-stage.
+  virtual std::future<std::optional<KvBlock>> Fetch(
+      const std::string& peer_id, BlockId id) = 0;
 };
 
 // gRPC bidi-stream transport. Always available. Default when RDMA is off.
+//
+// W5-6 implementation note: this implementation is the production data
+// path. The Send method invokes Insert RPCs (replication push); Fetch
+// invokes the Fetch RPC. Both run synchronously inside the call and
+// return a ready future — true async dispatch happens at the
+// Replicator's worker-pool layer above us. See
+// docs/decisions/W5_rdma_fallback.md for why we ship gRPC as the data
+// path despite the "RDMA for KV transfer" wording in DESIGN.md §6.
 class GrpcStreamTransport : public KvTransport {
  public:
   GrpcStreamTransport(RdmaConfig cfg, OnReceiveFn on_receive);
@@ -81,12 +112,19 @@ class GrpcStreamTransport : public KvTransport {
                          BlockId id,
                          StreamPurpose purpose,
                          std::span<const std::byte> data) override;
+  std::future<std::optional<KvBlock>> Fetch(
+      const std::string& peer_id, BlockId id) override;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-// libibverbs / SoftRoCE transport. Compiled only when LETHE_ENABLE_RDMA=ON.
+// libibverbs / SoftRoCE transport. Header-only declaration unless
+// LETHE_ENABLE_RDMA=ON AND a SoftRoCE / real-IB device is present at
+// runtime. Per docs/decisions/W5_rdma_fallback.md, the W5-6 milestone
+// could not validate this against real hardware (WSL2 kernel ships
+// without the InfiniBand subsystem); the abstraction stays so the
+// swap is a constructor change in main.cpp when hardware arrives.
 class IbverbsTransport : public KvTransport {
  public:
   IbverbsTransport(RdmaConfig cfg, OnReceiveFn on_receive);
@@ -100,6 +138,8 @@ class IbverbsTransport : public KvTransport {
                          BlockId id,
                          StreamPurpose purpose,
                          std::span<const std::byte> data) override;
+  std::future<std::optional<KvBlock>> Fetch(
+      const std::string& peer_id, BlockId id) override;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
