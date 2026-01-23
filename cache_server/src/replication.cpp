@@ -179,6 +179,13 @@ Replicator::Replicator(std::string local_node_id,
     : local_node_id_(std::move(local_node_id)),
       router_(router),
       store_(store) {
+  // store_ is stashed for W8's TriggerReReplication (scans the local
+  // store for under-replicated blocks after a peer is declared dead).
+  // W4 doesn't read it. The (void) cast satisfies clang's
+  // -Wunused-private-field without the cross-compiler quirks of
+  // [[maybe_unused]] on a data member (same pattern as
+  // Membership::router_ / replicator_; see W1.2.6 commit 8601013).
+  (void)store_;
   auto state = std::make_unique<ReplicatorPoolState>();
   // Spawn workers AFTER the unique_ptr is in the registry so the
   // worker lambda can look up its state safely. Capture `this` by
