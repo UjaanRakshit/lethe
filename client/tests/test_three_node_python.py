@@ -224,15 +224,42 @@ def test_per_primary_batching_uses_few_rpcs(cluster):
     addrs = dict(cluster)
     peers = list(addrs.items())
 
-    # Seed 30 distinct cold-cache blocks so every Lookup is a miss.
+    # Seed 30 distinct cold-cache blocks. NOTE on counting: the
+    # server returns optimistic RemoteHit (a routing hint pointing at
+    # the block's primary) even when the primary doesn't actually
+    # have the block. The client's transparent Fetch then returns
+    # None for cold-cache blocks, surfacing as None entries in
+    # result.fetched. So the correct cold-cache assertion is "every
+    # fetched value is None," NOT "len(misses) == N" — misses only
+    # contains blocks for which the server returned NEITHER LocalHit
+    # NOR RemoteHit (e.g. router has no peer for the routed primary).
     block_ids = [_make_block(seed=10000 + i)[0] for i in range(30)]
 
     with LetheClient(primary_address=addrs["node0"], peers=peers) as c:
         t0 = time.monotonic()
         result = c.lookup(block_ids, request_id="batched")
         elapsed = time.monotonic() - t0
-    assert len(result.misses) == 30, f"expected 30 misses, got {result}"
-    # Plenty of slack: even 100ms beats per-block routing badly.
+
+    # Every block should be classified — either as a hit (LocalHit on
+    # the queried node, or RemoteHit forwarded by it) or a miss. The
+    # union covers all 30 input blocks.
+    classified = len(result.hits) + len(result.misses)
+    assert classified == 30, (
+        f"expected 30 classified results, got {classified} "
+        f"({len(result.hits)} hits + {len(result.misses)} misses)"
+    )
+    # Cold cache: every transparent-fetch follow-up returns None.
+    # If anything came back with bytes, prior test state leaked.
+    leaked = [k for k, v in result.fetched.items() if v is not None]
+    assert not leaked, (
+        f"cold cache expected; {len(leaked)} blocks returned bytes "
+        f"(state leak from a prior test?). First leaked hash: "
+        f"{leaked[0].hex()[:16]}…"
+    )
+    # Timing: per-primary batching should keep this well under 1s on
+    # loopback. Without batching, the floor would be 30 × per-block
+    # RPC overhead (~30 ms for 1 ms loopback RTT, much more in
+    # practice with the transparent-fetch retries).
     assert elapsed < 1.0, (
         f"30-block lookup took {elapsed:.3f}s; per-primary batching "
         "likely regressed (or the cluster is unhealthy)"
