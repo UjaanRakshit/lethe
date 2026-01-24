@@ -29,6 +29,7 @@ endif()
 set(_lethe_test_link_srcs
   ${CMAKE_SOURCE_DIR}/cache_server/src/block_store.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/tiered_store.cpp
+  ${CMAKE_SOURCE_DIR}/cache_server/src/ssd_block_store.cpp  # W7
   ${CMAKE_SOURCE_DIR}/cache_server/src/cache.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/membership.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/routing.cpp
@@ -38,6 +39,10 @@ set(_lethe_test_link_srcs
   ${CMAKE_SOURCE_DIR}/cache_server/src/replication.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/eviction.cpp
   ${CMAKE_SOURCE_DIR}/cache_server/src/metrics.cpp
+  # W5-6: GrpcStreamTransport is now constructed by LetheCache's ctor,
+  # so every test that builds a LetheCache (test_cache, future
+  # test_tiered_store) needs the transport TU linked.
+  ${CMAKE_SOURCE_DIR}/cache_server/src/grpc_stream_transport.cpp
 )
 
 function(lethe_add_unit_test name source)
@@ -84,7 +89,8 @@ function(lethe_add_unit_test name source)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-lethe_add_unit_test(test_block_store unit/test_block_store.cpp)
-lethe_add_unit_test(test_cache       unit/test_cache.cpp)
-lethe_add_unit_test(test_membership  unit/test_membership.cpp)
-lethe_add_unit_test(test_routing     unit/test_routing.cpp)
+lethe_add_unit_test(test_block_store  unit/test_block_store.cpp)
+lethe_add_unit_test(test_cache        unit/test_cache.cpp)
+lethe_add_unit_test(test_membership   unit/test_membership.cpp)
+lethe_add_unit_test(test_routing      unit/test_routing.cpp)
+lethe_add_unit_test(test_tiered_store unit/test_tiered_store.cpp)  # W7

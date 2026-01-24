@@ -144,13 +144,15 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
 
     // First branch: try the local store. A LocalHit short-circuits
     // even if this node isn't the primary for the block — having the
-    // bytes locally is better than a network round-trip.
+    // bytes locally is better than a network round-trip. W7: Get
+    // returns OWNED bytes (vector) because the SSD tier can't lend
+    // spans safely; move them straight into the entry.
     if (auto got = store_->Get(id); got.has_value()) {
       e.where = LookupResult::Entry::Where::LocalHit;
       e.tier = got->tier_found;
-      e.local_data = got->data;
+      e.local_data = std::move(got->data);
       ++result.hit_count;
-      result.entries.push_back(e);
+      result.entries.push_back(std::move(e));
       continue;
     }
 
@@ -182,15 +184,14 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
             // Repair: write to local store. ID was preserved by
             // FetchFromAny so the next Get will hit.
             store_->Put(*fetched, Tier::DRAM);
-            // Re-fetch the local span so the returned local_data
-            // points at the freshly-stored copy (not the moved-from
-            // local).
+            // Re-Get so the returned local_data is an owned copy of
+            // the freshly-stored bytes (the Put consumed `fetched`).
             if (auto repaired = store_->Get(id); repaired.has_value()) {
               e.where = LookupResult::Entry::Where::LocalHit;
               e.tier = repaired->tier_found;
-              e.local_data = repaired->data;
+              e.local_data = std::move(repaired->data);
               ++result.hit_count;
-              result.entries.push_back(e);
+              result.entries.push_back(std::move(e));
               continue;
             }
           }
@@ -220,22 +221,22 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
                                  const std::string& /*request_id*/,
                                  const std::string& /*source_node*/,
                                  InsertOptions /*opts*/) {
-  // W4 async replication: write locally first → ACK to caller → kick
-  // off background ReplicateOut. opts.sync_replicate is still accepted
-  // but unimplemented; the W0 decision (async by default) holds. If
-  // we ever need sync replication (e.g. for chaos's "durability
-  // before ACK" assertion), that path lights up here under the
-  // opts.sync_replicate guard.
+  // W4 async replication + W7 tier-aware insert: write locally first
+  // (using blk.tier as the hint, defaulting to DRAM) → ACK → kick off
+  // background ReplicateOut. opts.sync_replicate is still accepted but
+  // unimplemented; the W0 decision (async by default) holds.
   std::uint32_t accepted = 0;
   for (auto& blk : blocks) {
-    const std::size_t before = store_->used_bytes(Tier::DRAM);
+    // Capture the hint before std::move-ing blk into Put. The hint
+    // comes from the InsertRequest.Block.tier_hint (main.cpp shim sets
+    // it). Default for callers that don't set it: DRAM.
+    const Tier hint = blk.tier;
     // Save a copy of the block for the replication queue BEFORE we
     // std::move it into the local store. The replication task needs
     // its own owned bytes since it runs after Insert returns.
     KvBlock to_replicate = blk;
-    store_->Put(std::move(blk), Tier::DRAM);
-    const std::size_t after = store_->used_bytes(Tier::DRAM);
-    if (after > before) {
+    const auto landed = store_->Put(std::move(blk), hint);
+    if (landed.has_value()) {
       ++accepted;
       if (replicator_ != nullptr) {
         // Fire-and-forget. ReplicateOut returns the peer_ids it

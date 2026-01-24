@@ -73,12 +73,12 @@ struct LookupResult {
     Where where = Where::Miss;
     std::optional<std::string> remote_node;  // populated when RemoteHit
     Tier tier = Tier::DRAM;                  // for LocalHit / RemoteHit
-    // For LocalHit: a borrowed view into the block store. Valid until the
-    // next mutating call on this BlockId (Insert, Erase, eviction pass,
-    // demotion). The gRPC service handler serializes immediately and drops
-    // the reference; in-process callers MUST either copy or finish using
-    // the span before returning control to the cache. Empty otherwise.
-    std::span<const std::byte> local_data;
+    // For LocalHit: an OWNED copy of the block payload (W7 change from
+    // W1's borrowed span). The SSD tier can't safely lend spans into
+    // mmap'd memory across slot reuse, and uniform ownership is simpler
+    // than per-tier dispatch. Cost: one memcpy per Get. Negligible at
+    // 64 KiB block sizes. Empty when not LocalHit.
+    std::vector<std::byte> local_data;
   };
   std::vector<Entry> entries;
   std::uint32_t hit_count = 0;

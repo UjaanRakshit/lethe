@@ -26,6 +26,7 @@ set(LETHE_SRCS
   src/cache.cpp
   src/block_store.cpp
   src/tiered_store.cpp
+  src/ssd_block_store.cpp        # W7: mmap-backed slot allocator
   src/routing.cpp
   src/replication.cpp
   src/eviction.cpp

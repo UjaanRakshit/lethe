@@ -127,7 +127,12 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
       const std::string& payload = b.kv_data();
       kv.data.resize(payload.size());
       std::memcpy(kv.data.data(), payload.data(), payload.size());
-      kv.tier = Tier::DRAM;
+      // W7: respect the client's tier_hint. 0=HBM, 1=DRAM, 2=SSD.
+      // Out-of-range or missing → default to DRAM (the always-on tier).
+      const std::uint32_t raw_hint = b.tier_hint();
+      kv.tier = (raw_hint <= 2)
+                    ? static_cast<Tier>(raw_hint)
+                    : Tier::DRAM;
       blocks.push_back(std::move(kv));
     }
     const std::uint32_t accepted = cache_->Insert(
@@ -149,8 +154,9 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
     LookupResult result = cache_->Lookup({id}, /*request_id=*/{}, /*requesting_node=*/{});
     if (result.entries.size() == 1 &&
         result.entries[0].where == LookupResult::Entry::Where::LocalHit) {
-      const auto& span = result.entries[0].local_data;
-      resp->set_kv_data(span.data(), span.size());
+      // W7: local_data is now an owned vector<byte>, not a span.
+      const auto& bytes = result.entries[0].local_data;
+      resp->set_kv_data(bytes.data(), bytes.size());
       resp->set_found(true);
       resp->set_tier(static_cast<uint32_t>(result.entries[0].tier));
     } else {
@@ -288,7 +294,12 @@ int main(int argc, char** argv) {
   // hard rule is "default builds don't link ibverbs"; the soft choice
   // here is "default builds don't grab 32 GiB of host RAM either."
   cfg.dram_bytes = 1ULL << 30;   // 1 GiB
-  cfg.ssd_bytes = 0;             // SSD tier disabled in W1.
+  // W7: enable a modest SSD tier by default so demotion paths get
+  // exercised by smoke tests and the 3-node Python integration suite.
+  // Per-node path keeps multiple lethe_servers on the same machine
+  // from clobbering each other's SSD file.
+  cfg.ssd_bytes = 256ULL << 20;  // 256 MiB
+  cfg.ssd_path = std::string("/tmp/lethe-") + cfg.node_id + "/ssd";
 
   std::cout << "[lethe] node=" << cfg.node_id
             << " grpc=" << cfg.grpc_port
