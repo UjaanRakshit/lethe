@@ -42,20 +42,25 @@ namespace lethe {
 // On-disk slot layout (POD; little-endian; field order matches the file
 // byte order). 64 bytes total leaves room for a few future fields without
 // growing the slot beyond a single cache line.
+//
+// Field order is chosen for natural alignment: the 8-byte
+// `inserted_epoch` follows `hash` so it lands at offset 40 (multiple of
+// 8) without compiler-inserted padding. The lone 32-bit fields tail
+// the struct so the post-pad is just the 4-byte `reserved` slot.
 struct SsdSlotHeader {
   // Magic byte to distinguish "live block" (0xA5) from "free" (0x00) and
   // from "torn write" (anything else). Set last when writing so partial
   // writes show up as torn rather than live-with-wrong-bytes.
-  std::uint8_t magic;
-  std::uint8_t tier;             // raw uint8 of Tier::SSD; reserved for future
-  std::uint16_t flags;
-  std::uint32_t payload_size;    // bytes in this slot's payload region
-  std::array<std::byte, 32> hash;
-  std::uint32_t layer;
-  std::uint32_t head_group;
-  std::uint32_t model_id;
-  std::uint64_t inserted_epoch;
-  std::array<std::byte, 4> reserved;
+  std::uint8_t magic;            // offset 0
+  std::uint8_t tier;             // offset 1
+  std::uint16_t flags;           // offset 2-3
+  std::uint32_t payload_size;    // offset 4-7
+  std::array<std::byte, 32> hash; // offset 8-39
+  std::uint64_t inserted_epoch;  // offset 40-47 (naturally 8-aligned)
+  std::uint32_t layer;           // offset 48-51
+  std::uint32_t head_group;      // offset 52-55
+  std::uint32_t model_id;        // offset 56-59
+  std::array<std::byte, 4> reserved;  // offset 60-63
 };
 static_assert(sizeof(SsdSlotHeader) == 64,
               "SsdSlotHeader must be exactly 64 bytes for slot alignment");
