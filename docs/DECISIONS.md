@@ -269,3 +269,133 @@ into one user-visible call with one extra round-trip.
 (distinguishes in-route vs out-of-route on miss);
 `client/lethe_client/client.py::lookup` (transparent fetch on
 RemoteHit).
+
+---
+
+## 2026-05-27 — KvTransport adds Fetch alongside Send
+
+**Context.** The W0 KvTransport interface had only `Send` (push) and an
+`OnReceive` callback. The W4 Replicator's read-repair path (FetchFromAny)
+did pull-shaped RPCs directly via its own gRPC PeerClient, bypassing the
+abstraction. The W5-6 prompt mandated "Replicator takes KvTransport& at
+construction. No more direct gRPC calls from Replicator."
+
+**Decision.** Add `Fetch(peer_id, BlockId) -> future<optional<KvBlock>>`
+to KvTransport, symmetric with `Send`. Both methods are implementable
+over either gRPC or ibverbs without leaking transport specifics.
+Replicator's FetchFromAny now dispatches `transport_->Fetch(...)` per
+peer via `std::async`, preserving the W4 parallel-fan-out + first-non-
+empty-wins semantic.
+
+**Alternatives considered.**
+- **Implement Fetch as Send-of-request + OnReceive-of-response.** Would
+  shoehorn pull semantics through a push primitive. Rejected: it would
+  force a request-correlation layer inside the transport (peer needs
+  to match incoming response to its request future), which is wire-
+  protocol territory and doesn't belong in the transport abstraction.
+- **Keep FetchFromAny on its own gRPC PeerClient.** Rejected: violates
+  the prompt's "no direct gRPC from Replicator" rule, and leaves the
+  transport abstraction partially-applied (Send goes through it but
+  Fetch doesn't) — which is exactly the kind of half-applied
+  abstraction that decays.
+
+**Rationale.** Push and pull are equally fundamental shapes for a bulk-
+KV transport. The gRPC implementation makes Send → Insert RPC and
+Fetch → Fetch RPC (the existing RPC surface already supports both).
+The ibverbs implementation (W12) makes Send → ibv_post_send and Fetch
+→ either a small Send-of-request-id followed by a Send-of-response, or
+an RDMA Read against the peer's exported MR. Either ibverbs choice is
+hidden behind the interface.
+
+**Cross-references.** `cache_server/include/lethe/kv_transport.hpp`
+(interface); `cache_server/src/grpc_stream_transport.cpp` (impl);
+`cache_server/src/replication.cpp::FetchFromAny` (caller).
+
+---
+
+## 2026-05-27 — transport_ outlives replicator_ (cache.hpp field order)
+
+**Context.** The W5-6 refactor moved peer-channel ownership from
+`Replicator::peer_clients_` into `GrpcStreamTransport::Impl::peers`.
+Replicator's worker threads call `transport_->Send` continuously
+during the cache's lifetime. C++ destroys class members in REVERSE
+declaration order; in the original `LetheCache` layout
+(`...replicator_; ...transport_;`), `transport_` would be destroyed
+FIRST, leaving Replicator's still-running workers with a dangling
+pointer.
+
+**Decision.** Reorder `cache.hpp` so `std::unique_ptr<KvTransport>
+transport_;` is declared BEFORE `std::unique_ptr<Replicator>
+replicator_;`. Reverse-declaration destruction then runs
+`~Replicator` (joins workers) before `~KvTransport` (closes channels).
+A load-bearing comment on the field block names the rule.
+
+**Alternatives considered.**
+- **Explicit `replicator_.reset()` in `LetheCache::Shutdown`.** Would
+  destroy Replicator early enough. Rejected: introduces a window
+  where `membership_` (which holds `Replicator*` for W8 use) has a
+  dangling pointer. Even though Membership doesn't dereference it in
+  W3-W4, the latent hazard is worse than the field reorder.
+- **Reference-counted transport (shared_ptr).** Replicator's workers
+  could hold their own shared_ptr to the transport so the transport
+  lives until the last worker exits. Rejected: introduces ownership
+  ambiguity into a layer that's supposed to be straightforward, just
+  to work around an explicitly-orderable destruction.
+
+**Rationale.** Member-order destruction is a C++ contract; encode the
+invariant by declaration order and document it. The cost is one
+comment block; the benefit is that the invariant survives future
+refactors that move methods or rename things.
+
+**Cross-references.** `cache_server/include/lethe/cache.hpp` (the
+field block carries the load-bearing comment);
+`cache_server/src/cache.cpp::Shutdown` (the destructor handler trusts
+the order rather than re-establishing it).
+
+---
+
+## 2026-05-27 — W5-6 ships gRPC as the production data path
+
+**Context.** The W5-6 milestone's primary deliverable was RDMA via
+SoftRoCE. The dev environment is WSL2 on Windows; gate #1 of the
+prompt required SoftRoCE be brought up within 90 minutes and produce
+wire traffic via `ibv_rc_pingpong`. Otherwise: fall back to gRPC for
+the data path.
+
+**Decision.** Fall back. The WSL2 Microsoft kernel
+(5.15.x-microsoft-standard-WSL2) ships without the InfiniBand
+subsystem at all; `rdma_rxe` cannot be loaded; `rdma link show` fails
+with a NETLINK_RDMA socket error. SoftRoCE is unreachable in this
+environment.
+
+The fallback still SHIPS the architectural piece: Replicator now
+delegates ALL peer-to-peer block movement to KvTransport, and the
+ibverbs class is wired into the build but its methods abort if
+constructed. W12 PACE on real IB hardware swaps the transport with a
+one-line change in `cache.cpp`.
+
+**Alternatives considered.**
+- **Build a custom WSL2 kernel with `CONFIG_RDMA_RXE=m`.** Plausible
+  in principle (estimated 8-12 hours of kernel-build and Hyper-V-
+  network-stack debugging, with significant probability of failing
+  for unrelated reasons). Rejected: 25-hour W5-6 cap doesn't have
+  room, and the bullet outcome is unchanged regardless.
+- **Acquire IB hardware for this milestone.** Not in scope. W12 PACE
+  is the venue for real-hardware validation.
+- **Defer the KvTransport refactor and re-do it at W12.** Rejected:
+  the abstraction was already half-built and the W4 Replicator was
+  fully gRPC; finishing the abstraction now under no time pressure is
+  cheaper than doing it at W12 under bring-up pressure. Also the
+  bullet credibility — "designed and shipped the abstraction"
+  outranks "designed an abstraction we never built."
+
+**Rationale.** CLAUDE.md rule 4 is exactly this escape hatch ("if
+SoftRoCE setup or QP debugging consumes more than 2.5 weeks of W5-6,
+fall back to gRPC streaming for the data path"). The decision was
+pre-authorized; gate #1 just removed the ambiguity about whether to
+exercise it.
+
+**Cross-references.** `docs/decisions/W5_rdma_fallback.md` (the full
+gate-#1-firing record); CLAUDE.md "Hard rules" §4;
+`cache_server/CMakeLists.txt` (the deferred-link comment naming the
+exact CMake lines to re-add at W12).
