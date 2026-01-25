@@ -399,3 +399,91 @@ exercise it.
 gate-#1-firing record); CLAUDE.md "Hard rules" §4;
 `cache_server/CMakeLists.txt` (the deferred-link comment naming the
 exact CMake lines to re-add at W12).
+
+---
+
+## 2026-05-27 — LookupResult::Entry::local_data owns bytes (W7 change)
+
+**Context.** W1 designed `local_data` as `std::span<const std::byte>`
+borrowed into the store's `unordered_map<BlockId, KvBlock>` — valid as
+long as no Erase or replacing Put happens on the same id. The lifetime
+contract was that the gRPC shim serializes immediately, before any
+concurrent mutation could land.
+
+W7 adds the SSD tier (mmap'd slot allocator). SSD slots get reused on
+Erase + Put — the bytes at a given mmap address can be overwritten by
+an unrelated block once the slot's freed. Lending a span into that
+storage is unsound past the next slot reuse.
+
+**Decision.** Change `LookupResult::Entry::local_data` from
+`std::span<const std::byte>` to `std::vector<std::byte>`. TieredStore's
+`GetResult.data` is owned bytes; the per-tier `Get` paths copy into
+this owned buffer. The W1 borrow contract is retired.
+
+**Alternatives considered.**
+- **Keep span at the upper layer; have SSD Get always promote to DRAM
+  first** so the returned span lives in DRAM. Rejected: ties the
+  promotion policy to the type of the return value (forced promotion
+  on every SSD hit), conflicts with the access-count-threshold policy
+  the prompt mandated.
+- **Make GetResult a non-movable RAII handle that holds the bytes for
+  HBM/DRAM via span and for SSD via owned buffer.** Rejected: the
+  asymmetry leaks into every caller and makes lifetime reasoning
+  per-tier. Uniform ownership is cheaper to reason about than
+  conditional ownership.
+- **Add a separate `local_data_owned` vector field only populated for
+  SSD reads.** Rejected: every caller has to check both fields and
+  know which one is live; the asymmetry never stops being a hazard.
+
+**Rationale.** Per-Get memcpy of one block (≤ 64 KiB) is in the
+noise. Long-context Lookups at hundreds of blocks per call are still
+< 16 MiB of copy per RPC, well below per-RPC gRPC framing overhead.
+The clarity of "Get returns owned bytes; lifetime is the GetResult"
+beats every borrow-correctness invariant the span variant would have
+needed.
+
+**Cross-references.** `cache_server/include/lethe/cache.hpp:69-87`
+(field declaration + W7 contract comment);
+`cache_server/include/lethe/tiered_store.hpp` (GetResult);
+`cache_server/src/cache.cpp::Lookup` (std::move into the entry);
+`cache_server/src/main.cpp` Fetch handler (reads vector, no span).
+
+---
+
+## 2026-05-27 — SSD allocator: fixed 64 KiB slots + bump-then-freelist
+
+**Context.** W7 needs an SSD-backed BlockStore with capacity bounded
+by `cfg.ssd_bytes`. Three real choices: variable-size allocator with
+a free-space data structure (B+-tree-style), a buddy allocator, or
+fixed-size slots.
+
+**Decision.** Fixed-size slots, default 64 KiB. Each slot is
+`{SsdSlotHeader (64 bytes), payload (slot_bytes - 64)}`. Slot
+allocation: bump pointer from index 0, plus a free list of indices
+returned by Erase. Index is rebuilt at startup by scanning every slot
+header and pulling live ones (magic byte == 0xA5).
+
+**Alternatives considered.**
+- **Variable-size allocator.** Real durable-storage systems do this
+  (RocksDB, LevelDB). Rejected: ~3× the implementation complexity and
+  drags in a free-space data structure with its own race conditions.
+  W11's chaos suite is the venue for "does the SSD allocator fragment
+  under realistic workload?"; W7 doesn't need the answer.
+- **Buddy allocator.** Cleaner than variable-size but still more
+  involved than a flat slot table. Same rejection rationale.
+- **One file per block.** Rejected: filesystem metadata overhead per
+  block, and N=million blocks = N inode entries.
+
+**Rationale.** KV blocks at production block sizes (16-64 tokens
+× model_dim × 2 (K+V) × bytes_per_param) range 8-128 KiB. A 64 KiB
+slot fits the median case with room for header. Worst-case
+fragmentation (50% under pessimistic block-size variance) is
+acceptable for a 12-week project; W11 measures whether it actually
+manifests. The freelist + bump-pointer combo is O(1) allocation
+without a free-space search.
+
+**Cross-references.** `cache_server/include/lethe/ssd_block_store.hpp`
+(SsdSlotHeader + class declaration);
+`cache_server/src/ssd_block_store.cpp::AllocSlot`;
+`TieredStoreConfig::ssd_slot_bytes` (configurable per node, default
+64 KiB).
