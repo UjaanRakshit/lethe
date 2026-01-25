@@ -89,14 +89,12 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
     }
     LookupResult result =
         cache_->Lookup(ids, req->request_id(), req->requesting_node());
-    // CONTRACT (cache.hpp:81-86): Entry::local_data spans are valid
-    // only until the next mutating cache call on the same BlockId.
-    // We serialize them into the response NOW — before this method
-    // returns and before any concurrent Insert can land. The proto's
-    // LookupResponse intentionally carries no bytes (just metadata);
-    // actual bytes go via Fetch / StreamBlocks. So the local_data is
-    // not even referenced from here, which is the simplest possible
-    // way to honor the contract.
+    // W7: Entry::local_data is an owned vector<byte> (not a borrowed
+    // span). No lifetime gymnastics required — we can read it whenever
+    // we want, and the proto's LookupResponse intentionally carries
+    // no bytes anyway (just per-block metadata); the actual payload
+    // goes back via Fetch / StreamBlocks. So local_data isn't even
+    // referenced from here, which keeps the wire response cheap.
     for (const auto& entry : result.entries) {
       if (entry.where == LookupResult::Entry::Where::LocalHit) {
         auto* hit = resp->add_hits();

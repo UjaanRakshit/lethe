@@ -5,18 +5,20 @@
 // Single-node, DRAM-only — matches the W1 deliverable scope.
 //
 // Specifically asserts:
-//   * Insert → Lookup returns LocalHit with a non-empty local_data span.
+//   * Insert → Lookup returns LocalHit with a non-empty local_data
+//     vector (W7: owned bytes, not borrowed span).
 //   * Lookup miss returns Miss (no router → no RemoteHit path in W1).
 //   * Multiple inserts (different ids) coexist; LookupResult counts
 //     hits and misses correctly per the proto's contract.
 //   * cluster_epoch() == 0 in W1 (no Membership yet; cache.cpp returns
 //     0 explicitly when membership_ is null).
-//   * The local_data lifetime contract from cache.hpp:81-86: the gRPC
-//     shim pattern (capture-bytes-before-next-call) works as long as
-//     the caller respects it. Demonstrated by capturing the span,
-//     doing a subsequent Insert (which under W1's no-mutation-of-
-//     existing-blocks semantics is harmless), and verifying the
-//     captured bytes are still valid.
+//   * Entry::local_data is independent of cache mutation: capturing
+//     the bytes after a Lookup, then doing more Inserts, then
+//     re-Looking-up the original id still returns the same bytes.
+//     Pre-W7 this exercised a borrowed-span lifetime contract;
+//     post-W7 the entry owns its bytes outright so the test is a
+//     trivially-satisfied invariant — kept as a regression guard
+//     against any future "optimization" that re-introduces borrows.
 //
 // Standalone main()-with-asserts.
 

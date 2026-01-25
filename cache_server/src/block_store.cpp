@@ -6,13 +6,16 @@
 // from metrics work; all *updates* still happen inside the write lock
 // so Put+Erase races can't race-corrupt the accounting.
 //
-// Lifetime contract (header cache.hpp:81-86 / block_store.hpp:31):
-// Get returns a span into the stored KvBlock.data vector. unordered_map
-// does NOT invalidate references to elements on rehash (per the
-// standard), so concurrent Puts that grow the map don't invalidate
-// existing spans. Erase DOES invalidate the element; callers must
-// either copy the span before any mutation on that BlockId or hold
-// some other guarantee that no Erase will land.
+// Lifetime contract: Get returns a span into the stored KvBlock.data
+// vector. unordered_map does NOT invalidate references to elements
+// on rehash (per the standard), so concurrent Puts that grow the map
+// don't invalidate existing spans. Erase DOES invalidate the element;
+// callers must either copy the span before any mutation on that
+// BlockId or hold some other guarantee that no Erase will land. The
+// only direct caller at and above this layer is TieredStore::Get,
+// which copies the span into an owned vector before returning to
+// upper layers (W7 owned-bytes contract on LookupResult::Entry::
+// local_data) — so the lend/borrow window stays inside TieredStore.
 
 #include "lethe/block_store.hpp"
 

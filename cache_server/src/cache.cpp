@@ -24,11 +24,14 @@
 //     The push-shaped flows (replication, read-repair pull,
 //     prefill→decode) all land here.
 //
-// Lifetime contract (cache.hpp:81-86): LookupResult::Entry::local_data
-// is a borrowed span into TieredStore's BlockStore. The gRPC service
-// shim in main.cpp serializes it into the wire response immediately;
-// no mutating cache call can happen between Lookup returning and the
-// shim's serialization on the same thread because the shim is sync.
+// Lifetime contract (cache.hpp::LookupResult::Entry::local_data):
+// since W7, `local_data` is an OWNED std::vector<std::byte> that the
+// Lookup path moves into the entry. The W1 "borrowed span, valid
+// until next mutation" contract is retired — the SSD tier can't
+// safely lend spans into mmap'd slots across reuse, and uniform
+// ownership beats per-tier dispatch (one memcpy per Get is in the
+// noise at 64 KiB block sizes). Callers can hold the entry as long
+// as they need; gRPC shim copies into the wire bytes and discards.
 
 #include "lethe/cache.hpp"
 

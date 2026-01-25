@@ -1,5 +1,5 @@
 """W1.2 integration test: byte-identical roundtrip through a running
-lethe_server, including the LookupResult::local_data lifetime contract.
+lethe_server.
 
 This test spawns a real lethe_server binary as a subprocess on a
 randomly-chosen TCP port, talks to it via the LetheClient over gRPC,
@@ -9,13 +9,14 @@ and verifies:
   * Lookup against the same IDs returns N hits, 0 misses.
   * Fetch returns the same bytes that were inserted, byte-for-byte.
   * Distinct BlockIds produce distinct stored content (no aliasing).
-  * The local_data span lifetime contract from cache.hpp:81-86:
-      Insert → Fetch (capture bytes) → trigger an INSERT that, if the
-      cache were exposing the original span across the wire, could
-      race and corrupt the readback → re-Fetch and assert the original
-      captured bytes still match what the second Fetch returns.
-    Since gRPC's Fetch always returns a copy (the server's shim
-    serializes immediately), the contract is honored.
+  * Independence-from-mutation: Insert → Fetch (capture bytes B1) →
+    Insert a different block → Fetch the first id again (B2) → assert
+    B1 == B2 == payload. Pre-W7 this exercised the borrowed-span
+    lifetime contract; post-W7 LookupResult::Entry::local_data owns
+    its bytes outright and Fetch always returns a fresh copy, so the
+    test is a trivially-satisfied invariant — kept as a regression
+    guard against any future change that re-introduces borrows on
+    the response path.
 
 Skips when the lethe_server binary can't be found — the build can't
 be exercised on this dev box (Protobuf / gRPC C++ not installed), but
@@ -206,11 +207,13 @@ def test_lookup_miss(server):
 
 
 def test_local_data_lifetime_contract_via_grpc(server):
-    """The cache.hpp:81-86 contract says LookupResult::local_data is
-    valid only until the next mutating call on that BlockId — the
-    gRPC shim must serialize immediately. From the client side this
-    surfaces as: Fetch always returns a fresh copy, independent of
-    any subsequent server-side mutation.
+    """Server-side Fetch returns immutable byte copies, not a span the
+    client could dereference past a subsequent mutation. Pre-W7 this
+    test guarded the borrowed-span lifetime contract; post-W7
+    LookupResult::Entry::local_data is an owned vector and Fetch
+    always copies the bytes onto the wire, so the test is trivially
+    satisfied. Kept as a regression guard against a future change
+    that re-introduces borrows on the response path.
 
     Test scenario:
       1. Insert block X with payload P.
@@ -219,9 +222,7 @@ def test_local_data_lifetime_contract_via_grpc(server):
          most-mutating operation the W1 API exposes; with Erase /
          eviction the test would be sharper, but neither is W1 work.
       4. Fetch X again → bytes B2.
-      5. Assert B1 == B2 == P. Confirms the cache returns immutable
-         copies, not a span that the client somehow ended up
-         dereferencing across mutations.
+      5. Assert B1 == B2 == P.
     """
     from lethe_client.client import BlockId, LetheClient
 
