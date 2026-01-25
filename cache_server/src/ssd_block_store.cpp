@@ -51,6 +51,13 @@ SsdBlockStore::SsdBlockStore(std::filesystem::path file,
       slot_payload_bytes_(slot_bytes - sizeof(SsdSlotHeader)),
       total_slots_(capacity_bytes / slot_bytes),
       usable_bytes_(total_slots_ * slot_payload_bytes_) {
+  // capacity_bytes_ is the user-requested file size; the actual file
+  // size we mmap is total_slots_ * slot_bytes_ (truncated down by slot
+  // alignment). Stored on the object for parity with the constructor
+  // arg + diagnostic clarity; the (void) cast silences clang's
+  // -Wunused-private-field — same pattern as Membership::router_.
+  (void)capacity_bytes_;
+
   if (slot_bytes <= sizeof(SsdSlotHeader)) {
     throw std::invalid_argument("ssd slot_bytes must exceed header size");
   }

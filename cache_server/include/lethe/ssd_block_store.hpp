@@ -119,6 +119,11 @@ class SsdBlockStore {
   void RebuildIndexFromMmap();
 
   std::filesystem::path file_;
+  // The total file size in bytes (= total_slots_ * slot_bytes_). Kept
+  // as a member so munmap()/error messages have the value handy
+  // without recomputing; the public `capacity_bytes()` accessor
+  // returns `usable_bytes_` instead because callers care about
+  // available payload capacity, not raw on-disk bytes.
   std::size_t capacity_bytes_;
   std::size_t slot_bytes_;
   std::size_t slot_payload_bytes_;

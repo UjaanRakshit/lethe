@@ -225,6 +225,19 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
   // (using blk.tier as the hint, defaulting to DRAM) → ACK → kick off
   // background ReplicateOut. opts.sync_replicate is still accepted but
   // unimplemented; the W0 decision (async by default) holds.
+  //
+  // "Accepted" semantics: counts NEWLY-INSERTED blocks. A Put against
+  // an already-present BlockId is idempotent (content-addressed; same
+  // hash → same bytes) and counts as 0, NOT 1. The W4 client roundtrip
+  // test (test_repeated_insert_is_idempotent) enforces this. We detect
+  // newness by total-used-bytes delta across all tiers — Put can land
+  // a new block in any tier (HBM/DRAM/SSD per the fallthrough chain),
+  // so we sum the deltas rather than watching one tier.
+  auto total_used = [&]() -> std::size_t {
+    return store_->used_bytes(Tier::HBM) + store_->used_bytes(Tier::DRAM) +
+           store_->used_bytes(Tier::SSD);
+  };
+
   std::uint32_t accepted = 0;
   for (auto& blk : blocks) {
     // Capture the hint before std::move-ing blk into Put. The hint
@@ -235,8 +248,9 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
     // std::move it into the local store. The replication task needs
     // its own owned bytes since it runs after Insert returns.
     KvBlock to_replicate = blk;
+    const std::size_t before = total_used();
     const auto landed = store_->Put(std::move(blk), hint);
-    if (landed.has_value()) {
+    if (landed.has_value() && total_used() > before) {
       ++accepted;
       if (replicator_ != nullptr) {
         // Fire-and-forget. ReplicateOut returns the peer_ids it
