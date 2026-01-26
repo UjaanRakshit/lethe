@@ -81,10 +81,6 @@ class Evictor {
   std::size_t peer_evicted_count_for_testing(const std::string& peer) const;
 
  private:
-  // pImpl-via-TU-local-registry pattern (same as Replicator) keeps
-  // gRPC types out of this header.
-  struct Impl;
-
   // Helper: fire one EvictBroadcast RPC per known peer carrying ALL
   // the block IDs evicted in the current pass. Best-effort; failures
   // are swallowed per CLAUDE.md rule 2.
@@ -94,6 +90,12 @@ class Evictor {
   TieredStore* store_;        // not owned
   Membership* membership_;    // not owned
   std::string local_node_id_;
+
+  // Per-instance state (threads, hand pointers, peer stubs, peer-
+  // eviction tracking) lives in a TU-local registry keyed by
+  // `this` so gRPC and std::thread types stay out of this header.
+  // See eviction.cpp `struct EvictorState` + `Registry`. Same pattern
+  // Replicator uses (replication.cpp `ReplicatorPoolState`).
 };
 
 }  // namespace lethe

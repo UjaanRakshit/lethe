@@ -75,7 +75,12 @@ constexpr int kBroadcastDeadlineMs = 500;
 
 }  // namespace
 
-struct Evictor::Impl {
+// Per-instance state, kept here rather than as a private nested type
+// on Evictor so the namespace-scope Registry below can access it
+// (a private nested forward declaration would block name lookup from
+// the registry helper). Same pattern as Replicator's
+// ReplicatorPoolState in replication.cpp.
+struct EvictorState {
   std::atomic<bool> running{false};
   std::vector<std::thread> threads;
 
@@ -109,7 +114,7 @@ namespace {
 
 struct Registry {
   std::mutex mu;
-  std::unordered_map<const Evictor*, std::unique_ptr<Evictor::Impl>> impls;
+  std::unordered_map<const Evictor*, std::unique_ptr<EvictorState>> impls;
 };
 
 Registry& registry() {
@@ -117,7 +122,7 @@ Registry& registry() {
   return r;
 }
 
-Evictor::Impl* impl_for(const Evictor* e) {
+EvictorState* impl_for(const Evictor* e) {
   auto& reg = registry();
   std::lock_guard<std::mutex> g(reg.mu);
   auto it = reg.impls.find(e);
