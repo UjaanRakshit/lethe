@@ -107,8 +107,22 @@ class Membership {
 
  private:
   void HeartbeatLoop();
-  void EvaluateSuspicions();
-  void OnMembershipChange();   // bumps epoch, rebuilds router, triggers repl
+  // Heartbeat fan-out: ONE std::async per active peer, parallel with
+  // per-RPC deadline = heartbeat_interval. Replies that come back
+  // before the outer deadline update PeerInfo timestamps and may
+  // resurrect a dead peer.
+  void SendHeartbeatsToAllPeers();
+  // EvaluateSuspicions returns the list of peers that just transitioned
+  // from alive→dead this tick. Caller (HeartbeatLoop) passes those to
+  // OnMembershipChange so Replicator::TriggerReReplication knows which
+  // ring positions to backfill from. Returns an empty vector when no
+  // membership change happened.
+  std::vector<std::string> EvaluateSuspicions();
+  // W8: takes the lost-peer list so Replicator::TriggerReReplication
+  // can scope the work to blocks whose replicas just disappeared.
+  // Bumps epoch, calls Router::SetPeers with the surviving alive set,
+  // then calls Replicator::TriggerReReplication(lost_peers).
+  void OnMembershipChange(const std::vector<std::string>& lost_peers);
 
   MembershipConfig cfg_;
   std::string local_node_id_;

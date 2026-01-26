@@ -103,12 +103,18 @@ std::optional<GetResult> TieredStore::Get(const BlockId& id) {
     return std::nullopt;
   }
 
-  // Bump the access counter under counts_mu_ (its own lock; not held
-  // anywhere else above).
+  // Bump the access counter AND set the SIEVE visited bit under
+  // counts_mu_ (its own lock; not held anywhere else above). Both
+  // pieces of bookkeeping fire on every Get hit, so one lock
+  // acquisition does both. Eviction reads visited via Snapshot,
+  // which takes shared locks on the underlying BlockStores; the
+  // visited bit lookup happens against this map under shared_lock,
+  // serialized against future MarkVisited calls.
   std::uint32_t count = 0;
   {
     std::unique_lock<std::shared_mutex> lock(counts_mu_);
     count = ++access_counts_[id];
+    visited_.insert(id);
   }
 
   bool promoted = false;
@@ -225,11 +231,13 @@ std::size_t TieredStore::Erase(const BlockId& id) {
   if (hbm_)  freed += hbm_->Erase(id);
   if (dram_) freed += dram_->Erase(id);
   if (ssd_)  freed += ssd_->Erase(id);
-  // Wipe the access counter so a re-Insert behaves as a fresh block,
-  // per the W0 contract.
+  // Wipe per-block bookkeeping so a re-Insert behaves as a fresh block,
+  // per the W0 contract. Both access_counts_ and the SIEVE visited
+  // bit live under counts_mu_; one lock acquisition wipes both.
   {
     std::unique_lock<std::shared_mutex> lock(counts_mu_);
     access_counts_.erase(id);
+    visited_.erase(id);
   }
   return freed;
 }
@@ -253,18 +261,43 @@ std::size_t TieredStore::capacity_bytes(Tier t) const {
 }
 
 std::vector<BlockMeta> TieredStore::Snapshot(Tier t) const {
+  std::vector<BlockMeta> out;
   switch (t) {
-    case Tier::HBM:  return hbm_  ? hbm_->Snapshot()  : std::vector<BlockMeta>{};
-    case Tier::DRAM: return dram_ ? dram_->Snapshot() : std::vector<BlockMeta>{};
-    case Tier::SSD:  return ssd_  ? ssd_->Snapshot()  : std::vector<BlockMeta>{};
+    case Tier::HBM:  out = hbm_  ? hbm_->Snapshot()  : std::vector<BlockMeta>{}; break;
+    case Tier::DRAM: out = dram_ ? dram_->Snapshot() : std::vector<BlockMeta>{}; break;
+    case Tier::SSD:  out = ssd_  ? ssd_->Snapshot()  : std::vector<BlockMeta>{}; break;
   }
-  return {};
+  // Overlay the W8 SIEVE visited bit. The underlying BlockStore
+  // doesn't know about visited; we paint it here so Evictor consumers
+  // see a unified BlockMeta.
+  if (!out.empty()) {
+    std::shared_lock<std::shared_mutex> lock(counts_mu_);
+    for (auto& m : out) {
+      m.visited = (visited_.count(m.id) > 0);
+    }
+  }
+  return out;
+}
+
+void TieredStore::MarkVisited(const BlockId& id) {
+  std::unique_lock<std::shared_mutex> lock(counts_mu_);
+  visited_.insert(id);
+}
+
+void TieredStore::ClearVisited(const BlockId& id) {
+  std::unique_lock<std::shared_mutex> lock(counts_mu_);
+  visited_.erase(id);
 }
 
 std::uint32_t TieredStore::access_count_for_testing(const BlockId& id) const {
   std::shared_lock<std::shared_mutex> lock(counts_mu_);
   auto it = access_counts_.find(id);
   return it == access_counts_.end() ? 0u : it->second;
+}
+
+bool TieredStore::visited_for_testing(const BlockId& id) const {
+  std::shared_lock<std::shared_mutex> lock(counts_mu_);
+  return visited_.count(id) > 0;
 }
 
 }  // namespace lethe

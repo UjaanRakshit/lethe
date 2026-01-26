@@ -24,7 +24,6 @@
 #include <chrono>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "lethe/types.hpp"
@@ -49,45 +48,52 @@ class Evictor {
           std::string local_node_id);
   ~Evictor();
 
+  Evictor(const Evictor&) = delete;
+  Evictor& operator=(const Evictor&) = delete;
+
+  // Idempotent. Spawns one eviction thread per real tier (HBM is only
+  // started if hbm capacity > 0; SSD only if ssd capacity > 0).
   void Start();
   void Shutdown();
 
-  // Force a single eviction pass; returns blocks evicted from each tier.
+  // Force a single eviction pass for a specific tier; returns blocks
+  // evicted from that tier. Used by tests; production callers wait for
+  // the scan-interval-driven loop.
   struct PassResult {
     std::size_t hbm_evicted = 0;
     std::size_t dram_evicted = 0;
     std::size_t ssd_evicted = 0;
     std::size_t bytes_freed = 0;
+    std::size_t blocks_broadcast = 0;
   };
-  PassResult RunPass();
+  PassResult RunPassForTier(Tier tier);
 
-  // Set the SIEVE visited bit on a block. Called from BlockStore::Get on
-  // every hit. O(1); thread-safe under the same mutex that guards the
-  // tier's block map.
-  void MarkVisited(const BlockId& id, Tier tier);
-
-  // Called from Cache::OnEvictBroadcast — record that a peer evicted these
-  // blocks so we don't try to read-repair from them.
+  // Called from Cache::OnEvictBroadcast — record that a peer evicted
+  // these blocks. Read-repair (Replicator::FetchFromAny) currently
+  // does NOT consult this; the W8 wire is in place and the optimization
+  // is a small follow-up if profiling shows wasted cross-cluster
+  // fetches against just-evicted nodes.
   void OnPeerEviction(const std::vector<BlockId>& evicted,
                       const std::string& peer);
 
+  // Test-only seam: count of how many block IDs are tracked as
+  // "this peer recently evicted." Returns 0 if peer is unknown.
+  std::size_t peer_evicted_count_for_testing(const std::string& peer) const;
+
  private:
-  void Loop();
-  std::vector<BlockId> PickVictims(Tier tier, std::size_t bytes_needed);
-  void BroadcastEvictions(const std::vector<BlockId>& evicted);
+  // pImpl-via-TU-local-registry pattern (same as Replicator) keeps
+  // gRPC types out of this header.
+  struct Impl;
+
+  // Helper: fire one EvictBroadcast RPC per known peer carrying ALL
+  // the block IDs evicted in the current pass. Best-effort; failures
+  // are swallowed per CLAUDE.md rule 2.
+  void BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted);
 
   EvictionConfig cfg_;
-  TieredStore* store_;
-  Membership* membership_;
+  TieredStore* store_;        // not owned
+  Membership* membership_;    // not owned
   std::string local_node_id_;
-
-  std::atomic<bool> running_{false};
-  std::thread thread_;
-
-  // SIEVE state per tier: a circular pointer into the snapshot list.
-  std::size_t sieve_hand_hbm_ = 0;
-  std::size_t sieve_hand_dram_ = 0;
-  std::size_t sieve_hand_ssd_ = 0;
 };
 
 }  // namespace lethe

@@ -103,9 +103,10 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
     replicator_->EnsurePeerClient(p.node_id, p.address);
   }
 
-  // W3: Membership constructed with the static peer set. W3-W4 treats
-  // OnHeartbeat as a peer-list view only (no failure detection, no
-  // epoch advancing). W8 adds the heartbeat loop.
+  // W3 / W8: Membership constructed with the static peer set.
+  // W8 lights up the real heartbeat thread + failure-detector loop;
+  // Start() below kicks them off. Membership holds Router* +
+  // Replicator* and calls into both on membership-change events.
   MembershipConfig mcfg{};
   membership_ = std::make_unique<Membership>(
       mcfg,
@@ -114,7 +115,15 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
       router_.get(),
       replicator_.get());
 
-  // Evictor/transport/metrics: still deferred to their weeks.
+  // W8: Evictor runs per-tier SIEVE scans and gossips evictions via
+  // EvictBroadcast. Takes TieredStore + Membership for the alive-peer
+  // address list. Watermark + scan-interval default; tune via
+  // EvictionConfig if pressure shape changes.
+  EvictionConfig ecfg{};
+  ecfg.high_watermark_pct = cfg_.eviction_high_watermark_pct;
+  ecfg.low_watermark_pct = cfg_.eviction_low_watermark_pct;
+  evictor_ = std::make_unique<Evictor>(
+      ecfg, store_.get(), membership_.get(), cfg_.node_id);
 }
 
 LetheCache::~LetheCache() {
@@ -122,18 +131,25 @@ LetheCache::~LetheCache() {
 }
 
 void LetheCache::Start() {
-  running_.store(true, std::memory_order_relaxed);
-  // W4+: evictor_->Start(); membership_->Start(); transport_->Start();
+  if (running_.exchange(true)) return;  // idempotent
+  // Start order matches the dependency chain: Membership before
+  // Evictor (Evictor reads Membership::AllPeerAddresses for
+  // broadcast). transport_->Start() was already called in the ctor.
+  if (membership_) membership_->Start();
+  if (evictor_)    evictor_->Start();
 }
 
 void LetheCache::Shutdown() {
-  running_.store(false, std::memory_order_relaxed);
-  // Close transport channels so any in-flight RPC unblocks. The
-  // worker-join happens during ~Replicator, which runs BEFORE
-  // ~KvTransport thanks to the field-declaration order in cache.hpp
-  // (transport_ declared first → destroyed last). transport_->Shutdown
-  // is idempotent; subsequent ~LetheCache calls find no peers to drop.
-  if (transport_) transport_->Shutdown();
+  if (!running_.exchange(false)) return;  // already stopped
+  // Reverse of Start. Evictor first (joins its tier threads) — those
+  // threads can call into Membership::AllPeerAddresses during a
+  // final pass, so Membership stays alive. Then Membership
+  // (joins heartbeat thread). Then close transport channels.
+  // Member destruction handles the unique_ptr cleanup in the field
+  // order encoded by cache.hpp.
+  if (evictor_)    evictor_->Shutdown();
+  if (membership_) membership_->Shutdown();
+  if (transport_)  transport_->Shutdown();
 }
 
 LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
@@ -290,11 +306,13 @@ HeartbeatReply LetheCache::OnHeartbeat(const std::string& peer_id,
   return HeartbeatReply{};
 }
 
-void LetheCache::OnEvictBroadcast(const std::vector<BlockId>& /*evicted*/,
-                                  const std::string& /*source*/) {
-  // W1: no evictor → drop the broadcast on the floor. W8 wires this
-  // into Evictor::OnPeerEviction so we don't read-repair from peers
-  // that just evicted the same block.
+void LetheCache::OnEvictBroadcast(const std::vector<BlockId>& evicted,
+                                  const std::string& source) {
+  // W8: delegate to Evictor::OnPeerEviction so the read-repair routing
+  // table can later skip peers that just evicted the same block. The
+  // skip-peer consumer in FetchFromAny is deferred; the wire is in
+  // place and the data is tracked.
+  if (evictor_) evictor_->OnPeerEviction(evicted, source);
 }
 
 std::uint64_t LetheCache::cluster_epoch() const noexcept {

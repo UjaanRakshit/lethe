@@ -143,17 +143,26 @@ class LetheCache {
   CacheConfig cfg_;
   std::unique_ptr<TieredStore> store_;
   std::unique_ptr<Router> router_;
-  // transport_ MUST outlive replicator_: Replicator's worker threads
-  // dispatch every peer-to-peer block movement through transport_->Send,
-  // so the transport must still be alive when those workers join in
-  // ~Replicator. C++ destroys members in REVERSE declaration order;
-  // hence transport_ is declared BEFORE replicator_ here. Don't
-  // re-order without re-reasoning about the worker-join → transport
-  // teardown race.
+  // Subsystem destruction order matters and is encoded by declaration
+  // order (reverse-decl is destruction order):
+  //   1. evictor_ destroyed first → its 3 tier threads join while
+  //      Membership + TieredStore are still alive (the threads dereference
+  //      both during a final scan pass that may already be in flight).
+  //   2. membership_ next → its heartbeat thread joins while Router +
+  //      Replicator are still alive (HeartbeatLoop calls Router::SetPeers
+  //      and Replicator::TriggerReReplication on a final membership tick).
+  //   3. replicator_ next → its worker pool joins while transport_ is
+  //      still alive (workers call transport_->Send).
+  //   4. transport_ next → channels close.
+  //   5. router_ and store_ last.
+  //
+  // Declaration order below puts the LATEST-destroyed members first;
+  // do NOT re-order without re-reasoning about the worker-join → peer
+  // subsystem teardown chain.
   std::unique_ptr<KvTransport> transport_;
   std::unique_ptr<Replicator> replicator_;
-  std::unique_ptr<Evictor> evictor_;
   std::unique_ptr<Membership> membership_;
+  std::unique_ptr<Evictor> evictor_;
   std::unique_ptr<Metrics> metrics_;
 
   std::atomic<bool> running_{false};

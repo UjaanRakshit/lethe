@@ -38,6 +38,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "lethe/block_store.hpp"
@@ -92,14 +93,27 @@ class TieredStore {
   // count map never outlives the block.
   std::size_t Erase(const BlockId& id);
 
-  // Per-tier introspection for metrics + eviction decisions.
+  // Per-tier introspection for metrics + eviction decisions. Snapshot's
+  // BlockMeta carries the W8 SIEVE visited bit; the Evictor reads it
+  // on each scan pass.
   std::size_t used_bytes(Tier t) const;
   std::size_t capacity_bytes(Tier t) const;
   std::vector<BlockMeta> Snapshot(Tier t) const;
 
+  // W8 SIEVE support. visited_ is a single set of BlockIds the cache
+  // has seen recently; the Evictor's scan reads it via Snapshot (which
+  // overlays the bit onto each BlockMeta). MarkVisited fires from Get
+  // on every hit; ClearVisited fires from the Evictor when SIEVE gives
+  // a block a second chance. The visited entry is wiped on Erase per
+  // the same access_counts_ contract.
+  void MarkVisited(const BlockId& id);
+  void ClearVisited(const BlockId& id);
+
   // Test-only seam: read the access counter for a block. Returns 0 if
   // the block has no entry (either never seen or wiped on Erase).
   std::uint32_t access_count_for_testing(const BlockId& id) const;
+  // Test-only seam for the SIEVE visited bit.
+  bool visited_for_testing(const BlockId& id) const;
 
  private:
   // Try to insert into `tier`'s BlockStore (HBM/DRAM) or SsdBlockStore.
@@ -118,6 +132,10 @@ class TieredStore {
   // Per-block access counter, used for promotion decisions. Hashed in a
   // separate map to keep BlockStore lean.
   std::unordered_map<BlockId, std::uint32_t, BlockIdHash> access_counts_;
+  // W8: SIEVE visited bits. Same shared_mutex as access_counts_ —
+  // both are touched on every Get; one lock acquisition handles both.
+  // Membership in `visited_` ⇒ "visited bit set". Absence ⇒ cleared.
+  std::unordered_set<BlockId, BlockIdHash> visited_;
   mutable std::shared_mutex counts_mu_;
 };
 

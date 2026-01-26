@@ -42,10 +42,12 @@
 #include <condition_variable>
 #include <deque>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "lethe/kv_transport.hpp"
@@ -287,11 +289,87 @@ std::optional<KvBlock> Replicator::FetchFromAny(
 }
 
 void Replicator::TriggerReReplication(
-    const std::vector<std::string>& /*lost_peers*/) {
-  // W8: scan local store for blocks where the ring now shows fewer than
-  // R replicas alive (i.e. the lost peers were on the replica list).
-  // Re-push to the new R-1 successors via transport_->Send. For W4-W6
-  // this is a no-op — failure detection (Membership) doesn't run yet.
+    const std::vector<std::string>& lost_peers) {
+  // W8 implementation: scan local blocks across all tiers. For each
+  // block whose CURRENT routing (post-membership-change; Membership
+  // called Router::SetPeers before calling us) places us in the
+  // replica set AND any of the route's peers was just lost, we push
+  // the block bytes to the current replicas via ReplicateOut.
+  //
+  // The Insert RPC is idempotent on BlockId (same hash → same bytes),
+  // so re-pushing to a peer that already has the block is a no-op
+  // at the receiver. That makes this safe to run on every surviving
+  // node — duplicates wash out, but no block goes under-replicated
+  // because all surviving copies attempt the re-push.
+  //
+  // Bounded: at most kBoundedScan blocks per call. If the local store
+  // has more than that affected by the change, the remaining blocks
+  // are picked up on the next eviction-loop tick OR on the next
+  // membership change. Re-replication completeness is W11 chaos
+  // surface; W8 covers the happy path.
+  if (router_ == nullptr || transport_ == nullptr || store_ == nullptr) {
+    return;
+  }
+  if (lost_peers.empty()) return;
+
+  constexpr std::size_t kBoundedScan = 256;
+  std::unordered_set<std::string> lost_set(lost_peers.begin(),
+                                           lost_peers.end());
+
+  // Collect candidates across all tiers. Snapshot calls are
+  // shared-locked on each BlockStore; the bytes load below uses
+  // TieredStore::Get which copies out an owned vector per the W7
+  // contract.
+  std::vector<BlockMeta> all;
+  for (Tier t : {Tier::HBM, Tier::DRAM, Tier::SSD}) {
+    auto snap = store_->Snapshot(t);
+    all.insert(all.end(), std::make_move_iterator(snap.begin()),
+               std::make_move_iterator(snap.end()));
+    if (all.size() >= kBoundedScan * 4) break;  // soft cap on scan cost
+  }
+
+  std::size_t dispatched = 0;
+  for (const auto& meta : all) {
+    if (dispatched >= kBoundedScan) break;
+
+    const auto route = router_->Route(meta.id);
+    // Are we in the route at all? Primary OR replica of the NEW ring.
+    bool we_in_route = (route.primary == local_node_id_);
+    if (!we_in_route) {
+      for (const auto& r : route.replicas) {
+        if (r == local_node_id_) { we_in_route = true; break; }
+      }
+    }
+    if (!we_in_route) continue;
+
+    // Did this block's OLD route include a now-lost peer? We don't
+    // have the old route here; the simplest sufficient condition is
+    // "the block's NEW primary OR any new replica is NOT us AND any
+    // of them was on lost_peers." But the lost peer is GONE from the
+    // new ring (Router::SetPeers removed it), so the new replicas
+    // won't contain it.
+    //
+    // What we DO know: if WE are in the new route AND were also
+    // likely in the old route, then a lost peer was probably also in
+    // the old route at our position's neighbors. Heuristic: any
+    // block we currently hold AND are in the route for IS a
+    // candidate — re-push to all current replicas, idempotent on
+    // the receiver. Cheap to over-include; expensive to under-
+    // include and leave a block under-replicated.
+    (void)lost_set;  // intentionally not used in the heuristic; see
+                     // comment above. Kept on the signature because
+                     // future versions might consult the old ring.
+
+    // Fetch the bytes locally and dispatch a ReplicateOut.
+    auto got = store_->Get(meta.id);
+    if (!got.has_value()) continue;
+    KvBlock blk;
+    blk.id = meta.id;
+    blk.data = std::move(got->data);
+    blk.tier = got->tier_found;
+    ReplicateOut(blk);
+    ++dispatched;
+  }
 }
 
 void Replicator::EnsurePeerClient(const std::string& peer_id,
