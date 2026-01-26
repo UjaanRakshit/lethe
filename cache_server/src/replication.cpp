@@ -40,6 +40,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <future>
 #include <iterator>
@@ -155,10 +157,17 @@ Replicator::Replicator(std::string local_node_id,
           raw->queue.pop_front();
         }
 
-        raw->replicate_attempts.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t attempt_n =
+            raw->replicate_attempts.fetch_add(1, std::memory_order_relaxed);
         if (transport_ == nullptr) {
           raw->replicate_failures.fetch_add(1, std::memory_order_relaxed);
           continue;
+        }
+        if (DebugRerepEnabled() && (attempt_n < 10 || attempt_n % 50 == 0)) {
+          std::fprintf(stderr, "[lethe %s] worker send #%llu → %s\n",
+                       local_node_id_.c_str(),
+                       static_cast<unsigned long long>(attempt_n),
+                       task.peer_id.c_str());
         }
         // Dispatch via transport. Block on the future — the worker IS the
         // concurrency unit here (queue + N workers = N in-flight Sends).
@@ -178,7 +187,14 @@ Replicator::Replicator(std::string local_node_id,
           ok = false;
         }
         if (!ok) {
-          raw->replicate_failures.fetch_add(1, std::memory_order_relaxed);
+          const std::uint64_t fail_n =
+              raw->replicate_failures.fetch_add(1, std::memory_order_relaxed);
+          if (DebugRerepEnabled() && (fail_n < 10 || fail_n % 50 == 0)) {
+            std::fprintf(stderr, "[lethe %s] worker send FAIL #%llu → %s\n",
+                         local_node_id_.c_str(),
+                         static_cast<unsigned long long>(fail_n),
+                         task.peer_id.c_str());
+          }
           // Per CLAUDE.md rule 2: never block scheduling on cache
           // liveness. Drop on the floor; W8 re-replication heals.
         }
@@ -288,6 +304,17 @@ std::optional<KvBlock> Replicator::FetchFromAny(
   return std::nullopt;
 }
 
+namespace {
+// Diagnostic gate; set LETHE_DEBUG_REREP=1 in the environment to get
+// stderr prints from TriggerReReplication. Disabled in normal builds
+// so production logs aren't polluted.
+bool DebugRerepEnabled() {
+  static const bool en = []{ const char* v = std::getenv("LETHE_DEBUG_REREP");
+                             return v != nullptr && *v != '0'; }();
+  return en;
+}
+}  // namespace
+
 void Replicator::TriggerReReplication(
     const std::vector<std::string>& lost_peers) {
   // W8 implementation: scan local blocks across all tiers. For each
@@ -308,13 +335,27 @@ void Replicator::TriggerReReplication(
   // membership change. Re-replication completeness is W11 chaos
   // surface; W8 covers the happy path.
   if (router_ == nullptr || transport_ == nullptr || store_ == nullptr) {
+    if (DebugRerepEnabled()) {
+      std::fprintf(stderr, "[lethe %s] TriggerReReplication: nullptr dep; skipping\n",
+                   local_node_id_.c_str());
+    }
     return;
   }
-  if (lost_peers.empty()) return;
+  if (lost_peers.empty()) {
+    if (DebugRerepEnabled()) {
+      std::fprintf(stderr, "[lethe %s] TriggerReReplication: lost_peers empty\n",
+                   local_node_id_.c_str());
+    }
+    return;
+  }
 
   constexpr std::size_t kBoundedScan = 256;
   std::unordered_set<std::string> lost_set(lost_peers.begin(),
                                            lost_peers.end());
+  if (DebugRerepEnabled()) {
+    std::fprintf(stderr, "[lethe %s] TriggerReReplication: lost=%zu\n",
+                 local_node_id_.c_str(), lost_peers.size());
+  }
 
   // Collect candidates across all tiers. Snapshot calls are
   // shared-locked on each BlockStore; the bytes load below uses
@@ -369,6 +410,10 @@ void Replicator::TriggerReReplication(
     blk.tier = got->tier_found;
     ReplicateOut(blk);
     ++dispatched;
+  }
+  if (DebugRerepEnabled()) {
+    std::fprintf(stderr, "[lethe %s] TriggerReReplication: scanned=%zu dispatched=%zu\n",
+                 local_node_id_.c_str(), all.size(), dispatched);
   }
 }
 

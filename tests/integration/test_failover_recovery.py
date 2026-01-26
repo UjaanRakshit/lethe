@@ -81,12 +81,21 @@ def _wait_for_listen(port: int, timeout: float = 10.0) -> bool:
 
 
 def _spawn_node(node_id: str, port: int, peers_spec: str) -> subprocess.Popen:
+    # Per-node log file so we can post-mortem re-replication failures.
+    log_path = Path(f"/tmp/lethe-fover-{node_id}.log")
+    env = os.environ.copy()
+    # LETHE_DEBUG_REREP=1 turns on stderr diagnostic prints in
+    # replication.cpp's TriggerReReplication + worker loop. Useful
+    # for debugging the failover test; harmless in normal runs.
+    env["LETHE_DEBUG_REREP"] = "1"
+    log_f = open(log_path, "w")
     return subprocess.Popen(
         [str(SERVER_BIN), node_id, str(port), "--peers", peers_spec],
-        stdout=subprocess.PIPE,
+        stdout=log_f,
         stderr=subprocess.STDOUT,
         text=True,
         start_new_session=True,
+        env=env,
     )
 
 
