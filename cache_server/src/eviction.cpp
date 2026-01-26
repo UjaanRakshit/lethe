@@ -34,7 +34,7 @@
 // state between the eviction threads beyond the read-only
 // TieredStore* and Membership* — both subsystems serialize their own
 // internals. EvictBroadcast stubs are per-peer with their own mutex
-// in Impl::stubs_mu.
+// in EvictorState::stubs_mu.
 
 #include "lethe/eviction.hpp"
 
@@ -139,7 +139,7 @@ Evictor::Evictor(EvictionConfig cfg,
       store_(store),
       membership_(membership),
       local_node_id_(std::move(local_node_id)) {
-  auto impl = std::make_unique<Impl>();
+  auto impl = std::make_unique<EvictorState>();
   auto& reg = registry();
   std::lock_guard<std::mutex> g(reg.mu);
   reg.impls.emplace(this, std::move(impl));
