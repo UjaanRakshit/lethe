@@ -251,6 +251,7 @@ void Membership::SendHeartbeatsToAllPeers() {
         it->second.last_seen = now;
         it->second.last_seen_epoch = epoch_.load(std::memory_order_relaxed);
         it->second.suspected = false;
+        it->second.ever_seen = true;  // first-contact guard cleared
         if (!it->second.alive) {
           it->second.alive = true;
           resurrected.push_back(peer_id);
@@ -276,6 +277,13 @@ std::vector<std::string> Membership::EvaluateSuspicions() {
   for (auto& [id, info] : peers_) {
     if (id == local_node_id_) continue;
     if (!info.alive) continue;
+    // Startup race guard: skip peers we've never successfully
+    // contacted yet. Without this, EvaluateSuspicions would declare
+    // every peer dead within dead_after of process start because
+    // last_seen was initialized to the ctor moment, before other
+    // nodes' gRPC servers were necessarily listening. See PeerInfo
+    // docs in membership.hpp for the longer note.
+    if (!info.ever_seen) continue;
     const auto since = now - info.last_seen;
     if (since > cfg_.dead_after) {
       info.alive = false;
@@ -350,6 +358,7 @@ HeartbeatReply Membership::OnHeartbeat(const std::string& peer_id,
     it->second.last_seen_epoch = epoch_.load(std::memory_order_relaxed);
     it->second.suspected = false;
     it->second.alive = true;
+    it->second.ever_seen = true;
     if (was_dead) resurrected = true;
 
     reply.cluster_epoch = epoch_.load(std::memory_order_relaxed);

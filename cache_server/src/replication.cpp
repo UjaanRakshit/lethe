@@ -65,6 +65,15 @@ constexpr std::size_t kReplicationQueueMax = 1024;
 constexpr int kReplicationWorkers = 4;
 constexpr int kFetchTimeoutMs = 500;
 
+// Diagnostic gate; set LETHE_DEBUG_REREP=1 in the environment to get
+// stderr prints from TriggerReReplication and the worker loop.
+// Disabled in normal builds so production logs aren't polluted.
+bool DebugRerepEnabled() {
+  static const bool en = []{ const char* v = std::getenv("LETHE_DEBUG_REREP");
+                             return v != nullptr && *v != '0'; }();
+  return en;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -303,17 +312,6 @@ std::optional<KvBlock> Replicator::FetchFromAny(
   }
   return std::nullopt;
 }
-
-namespace {
-// Diagnostic gate; set LETHE_DEBUG_REREP=1 in the environment to get
-// stderr prints from TriggerReReplication. Disabled in normal builds
-// so production logs aren't polluted.
-bool DebugRerepEnabled() {
-  static const bool en = []{ const char* v = std::getenv("LETHE_DEBUG_REREP");
-                             return v != nullptr && *v != '0'; }();
-  return en;
-}
-}  // namespace
 
 void Replicator::TriggerReReplication(
     const std::vector<std::string>& lost_peers) {

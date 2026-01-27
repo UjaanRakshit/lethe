@@ -46,6 +46,17 @@ struct PeerInfo {
   std::uint64_t last_seen_epoch = 0;
   bool suspected = false;
   bool alive = true;
+  // W8 startup race guard: PeerInfo entries are constructed at process
+  // start with last_seen = (some seed time). Other nodes' gRPC servers
+  // may not be listening yet, so the first several heartbeats may
+  // fail. Without a guard, EvaluateSuspicions would declare every peer
+  // dead within dead_after of process start. We instead skip peers
+  // whose ever_seen is false — they're "alive by assumption" until
+  // first proven otherwise. First successful contact in either
+  // direction (outbound heartbeat reply OR inbound OnHeartbeat) flips
+  // ever_seen to true and the dead_after clock starts running from
+  // that point on.
+  bool ever_seen = false;
 };
 
 // Defaults are deliberately conservative — `dead_after=3000ms` means false
