@@ -306,9 +306,18 @@ void Membership::OnMembershipChange(
   // Compute the new alive peer-id list under mu_, then drop the lock
   // before calling into Router (its own lock) and Replicator (its
   // own queue + worker pool). No lock holds across subsystem calls.
+  //
+  // CRITICAL: include the local node in the alive list passed to
+  // Router::SetPeers. peers_ stores only OTHER peers (main.cpp's
+  // --peers parser strips self), so iterating peers_ alone gives an
+  // incomplete ring — see the matching comment in cache.cpp's ctor.
+  // Without this, IsLocalPrimary/IsLocalReplica always return false
+  // and W8's re-replication heuristic dispatches zero blocks.
   std::vector<std::string> alive_ids;
   {
     std::lock_guard<std::mutex> lock(mu_);
+    alive_ids.reserve(peers_.size() + 1);
+    alive_ids.push_back(local_node_id_);  // self always alive locally
     for (const auto& [id, info] : peers_) {
       if (info.alive) alive_ids.push_back(id);
     }

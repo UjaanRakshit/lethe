@@ -60,18 +60,27 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   ts.ssd_path = cfg_.ssd_path;
   store_ = std::make_unique<TieredStore>(std::move(ts));
 
-  // W3: Router built from the static peer set. The static set always
-  // includes the local node (main.cpp injects it before constructing
-  // CacheConfig). Empty seed_peers → single-node mode; Router has no
-  // peers and Lookup falls back to LocalHit/Miss only.
+  // W3 (corrected at W8): Router needs the FULL cluster peer set
+  // including the local node — otherwise IsLocalPrimary / IsLocalReplica
+  // never return true on this node and Lookup's read-repair branch
+  // (and W8's TriggerReReplication "we_in_route" heuristic) never
+  // fire. main.cpp's --peers parser strips self from the seed list
+  // (the on-wire format names OTHER nodes); we add ourselves back
+  // here so the ring matches the Python client's HashRing
+  // construction, which is built with the full peer list.
+  // Empty seed_peers → single-node mode; the ring contains only us
+  // and routes everything locally.
   router_ = std::make_unique<Router>(
       cfg_.node_id,
       cfg_.virtual_nodes_per_peer,
       cfg_.replication_factor);
-  if (!cfg_.seed_peers.empty()) {
+  {
     std::vector<std::string> peer_ids;
-    peer_ids.reserve(cfg_.seed_peers.size());
-    for (const auto& p : cfg_.seed_peers) peer_ids.push_back(p.node_id);
+    peer_ids.reserve(cfg_.seed_peers.size() + 1);
+    peer_ids.push_back(cfg_.node_id);   // self always in the ring
+    for (const auto& p : cfg_.seed_peers) {
+      if (p.node_id != cfg_.node_id) peer_ids.push_back(p.node_id);
+    }
     router_->SetPeers(std::move(peer_ids));
   }
 
