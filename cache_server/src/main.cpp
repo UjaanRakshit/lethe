@@ -12,6 +12,8 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -87,8 +89,16 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
     for (const auto& pb_id : req->block_ids()) {
       ids.push_back(BlockIdFromProto(pb_id));
     }
+    const auto _t0 = std::chrono::steady_clock::now();
     LookupResult result =
         cache_->Lookup(ids, req->request_id(), req->requesting_node());
+    if (std::getenv("LETHE_DEBUG_REREP")) {
+      const auto _ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - _t0).count();
+      std::fprintf(stderr, "[lethe %s] Lookup(%d blocks) took %lldms\n",
+                   cache_->node_id().c_str(), req->block_ids_size(),
+                   static_cast<long long>(_ms));
+    }
     // W7: Entry::local_data is an owned vector<byte> (not a borrowed
     // span). No lifetime gymnastics required — we can read it whenever
     // we want, and the proto's LookupResponse intentionally carries
