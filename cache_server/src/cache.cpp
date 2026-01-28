@@ -187,12 +187,6 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
     // Local miss. Consult the Router.
     if (router_) {
       const auto route = router_->Route(id);
-      const bool we_are_primary =
-          !route.primary.empty() && route.primary == cfg_.node_id;
-      const bool we_are_in_route =
-          we_are_primary ||
-          std::any_of(route.replicas.begin(), route.replicas.end(),
-                      [&](const std::string& p) { return p == cfg_.node_id; });
 
       // Read-repair (server-side FetchFromAny on local miss) is
       // DISABLED at W8. Two reasons:
