@@ -292,6 +292,23 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
   return accepted;
 }
 
+std::optional<LetheCache::LocalFetchResult> LetheCache::FetchLocal(
+    const BlockId& id) {
+  // Non-recursive: only consults the local TieredStore. No router,
+  // no read-repair. This exists so the gRPC Fetch handler can ask
+  // "do I have this block locally?" without recursing back into
+  // Lookup's read-repair branch (which would issue Fetch RPCs to
+  // peers whose Fetch handlers would then call Lookup again, etc.).
+  // See cache.hpp:LocalFetchResult docstring.
+  if (auto got = store_->Get(id); got.has_value()) {
+    LocalFetchResult r;
+    r.data = std::move(got->data);
+    r.tier = got->tier_found;
+    return r;
+  }
+  return std::nullopt;
+}
+
 void LetheCache::IngestStreamedBlock(BlockId id,
                                      std::vector<std::byte> payload,
                                      StreamPurpose /*purpose*/) {

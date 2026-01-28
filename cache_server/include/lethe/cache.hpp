@@ -121,6 +121,20 @@ class LetheCache {
                            std::vector<std::byte> payload,
                            StreamPurpose purpose);
 
+  // Local-only fetch: returns block bytes + tier if present in the
+  // local TieredStore, nullopt otherwise. Does NOT consult the router
+  // and does NOT trigger read-repair. This is what the gRPC Fetch
+  // handler uses — going through Lookup would recurse:
+  // Fetch handler → Lookup → read-repair → FetchFromAny → peer Fetch
+  // → peer Lookup → peer read-repair → ... So Fetch needs a non-
+  // recursive entry point. Same data shape as a LocalHit entry's
+  // local_data / tier fields.
+  struct LocalFetchResult {
+    std::vector<std::byte> data;
+    Tier tier;
+  };
+  std::optional<LocalFetchResult> FetchLocal(const BlockId& id);
+
   HeartbeatReply OnHeartbeat(const std::string& peer_id,
                              std::uint64_t peer_epoch);
 

@@ -147,16 +147,16 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
     BlockId id = BlockIdFromProto(req->id());
     BlockIdToProto(id, resp->mutable_id());
 
-    // Lookup one block; if LocalHit, we have a span into the store —
-    // copy it into the response payload immediately (contract).
-    LookupResult result = cache_->Lookup({id}, /*request_id=*/{}, /*requesting_node=*/{});
-    if (result.entries.size() == 1 &&
-        result.entries[0].where == LookupResult::Entry::Where::LocalHit) {
-      // W7: local_data is now an owned vector<byte>, not a span.
-      const auto& bytes = result.entries[0].local_data;
-      resp->set_kv_data(bytes.data(), bytes.size());
+    // W8: use the non-recursive FetchLocal path. The previous Lookup-
+    // based implementation recursed: Fetch handler → cache_->Lookup
+    // → read-repair (now firing post-W8 router fix) → FetchFromAny
+    // → peer Fetch RPC → peer Lookup → peer read-repair → ... For a
+    // cold-cache block this looped until every peer timed out, killing
+    // throughput. FetchLocal only consults the local TieredStore.
+    if (auto got = cache_->FetchLocal(id); got.has_value()) {
+      resp->set_kv_data(got->data.data(), got->data.size());
       resp->set_found(true);
-      resp->set_tier(static_cast<uint32_t>(result.entries[0].tier));
+      resp->set_tier(static_cast<uint32_t>(got->tier));
     } else {
       resp->set_found(false);
     }
