@@ -194,37 +194,29 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
           std::any_of(route.replicas.begin(), route.replicas.end(),
                       [&](const std::string& p) { return p == cfg_.node_id; });
 
-      // Read-repair branch: we are in the route (primary or replica)
-      // but locally missed. Try FetchFromAny against the other peers
-      // in the route. On success, write locally + return as LocalHit.
-      // On failure, fall through to Miss.
-      if (we_are_in_route && replicator_ != nullptr) {
-        std::vector<std::string> repair_peers;
-        if (route.primary != cfg_.node_id && !route.primary.empty()) {
-          repair_peers.push_back(route.primary);
-        }
-        for (const auto& p : route.replicas) {
-          if (p != cfg_.node_id) repair_peers.push_back(p);
-        }
-        if (!repair_peers.empty()) {
-          auto fetched = replicator_->FetchFromAny(id, repair_peers);
-          if (fetched.has_value()) {
-            // Repair: write to local store. ID was preserved by
-            // FetchFromAny so the next Get will hit.
-            store_->Put(*fetched, Tier::DRAM);
-            // Re-Get so the returned local_data is an owned copy of
-            // the freshly-stored bytes (the Put consumed `fetched`).
-            if (auto repaired = store_->Get(id); repaired.has_value()) {
-              e.where = LookupResult::Entry::Where::LocalHit;
-              e.tier = repaired->tier_found;
-              e.local_data = std::move(repaired->data);
-              ++result.hit_count;
-              result.entries.push_back(std::move(e));
-              continue;
-            }
-          }
-        }
-      }
+      // Read-repair (server-side FetchFromAny on local miss) is
+      // DISABLED at W8. Two reasons:
+      //
+      // 1. Cold-cache amplification. For a Lookup whose blocks miss
+      //    on every node, each in-route block triggers FetchFromAny
+      //    → Fetch RPC to each replica. With N blocks × R-1 peers ×
+      //    per-call overhead, a 30-block cold lookup measurably blew
+      //    the W4 test_per_primary_batching budget (30s vs 1s) once
+      //    the W8 router-self-inclusion fix made we_are_in_route
+      //    actually true for the first time.
+      //
+      // 2. Redundant with the client's transparent fetch. The W4
+      //    LetheClient already implements the "RemoteHit → transparent
+      //    Fetch from source_node" path. Server-side read-repair was
+      //    an optimization that saved one round-trip on Lookup hits
+      //    that happened to land on the wrong peer; in the cold-cache
+      //    case it adds an unbounded fan-out.
+      //
+      // The architectural place for read-repair is at the chunk-level
+      // bulk-pull path (StreamBlocks; W11 chaos suite), where the
+      // hit-rate justifies it and the budget tolerates the extra hop.
+      // Leaving the route-aware miss handling below intact — we still
+      // return RemoteHit so the client can route to the right peer.
 
       // Not in the route (e.g. client's ring was stale during a
       // membership change). Report RemoteHit pointing at the primary
