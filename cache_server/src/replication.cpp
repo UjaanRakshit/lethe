@@ -381,32 +381,50 @@ void Replicator::TriggerReReplication(
     }
     if (!we_in_route) continue;
 
-    // Did this block's OLD route include a now-lost peer? We don't
-    // have the old route here; the simplest sufficient condition is
-    // "the block's NEW primary OR any new replica is NOT us AND any
-    // of them was on lost_peers." But the lost peer is GONE from the
-    // new ring (Router::SetPeers removed it), so the new replicas
-    // won't contain it.
-    //
-    // What we DO know: if WE are in the new route AND were also
-    // likely in the old route, then a lost peer was probably also in
-    // the old route at our position's neighbors. Heuristic: any
-    // block we currently hold AND are in the route for IS a
-    // candidate — re-push to all current replicas, idempotent on
-    // the receiver. Cheap to over-include; expensive to under-
-    // include and leave a block under-replicated.
-    (void)lost_set;  // intentionally not used in the heuristic; see
-                     // comment above. Kept on the signature because
-                     // future versions might consult the old ring.
+    // Heuristic: any block we currently hold AND are in the route for
+    // is a candidate — re-push it. Cheap to over-include (Insert dedup
+    // makes redundant pushes no-ops); expensive to under-include and
+    // leave a block under-replicated.
+    (void)lost_set;  // not consulted: we don't have the OLD ring here,
+                     // and "we hold it + we're in the new route" is a
+                     // sufficient candidate condition.
 
-    // Fetch the bytes locally and dispatch a ReplicateOut.
+    // Build the FULL target set: every route member (primary AND
+    // replicas) EXCEPT self. This is the key difference from
+    // ReplicateOut, which only pushes to replicas — that's correct
+    // for the primary-initiated Insert path, but WRONG for re-
+    // replication. After a death, a surviving REPLICA may be the only
+    // node holding a block whose NEW primary doesn't have it; if we
+    // only pushed to replicas (excluding the primary), that primary
+    // would never converge. Push to everyone in the route but us.
+    std::vector<std::string> targets;
+    if (!route.primary.empty() && route.primary != local_node_id_) {
+      targets.push_back(route.primary);
+    }
+    for (const auto& r : route.replicas) {
+      if (r != local_node_id_) targets.push_back(r);
+    }
+    if (targets.empty()) continue;
+
+    // Fetch the bytes locally and enqueue a push to each target.
     auto got = store_->Get(meta.id);
     if (!got.has_value()) continue;
     KvBlock blk;
     blk.id = meta.id;
     blk.data = std::move(got->data);
     blk.tier = got->tier_found;
-    ReplicateOut(blk);
+
+    auto* state = pool_for(this);
+    if (state == nullptr) break;
+    for (const auto& peer_id : targets) {
+      std::lock_guard<std::mutex> lock(state->mu);
+      if (state->queue.size() >= kReplicationQueueMax) {
+        state->overflow_drops.fetch_add(1, std::memory_order_relaxed);
+        continue;
+      }
+      state->queue.push_back(ReplicateTask{peer_id, blk});
+      state->cv.notify_one();
+    }
     ++dispatched;
   }
   if (DebugRerepEnabled()) {
