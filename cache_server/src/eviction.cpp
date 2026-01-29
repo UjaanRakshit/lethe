@@ -236,12 +236,20 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
 
   while (freed_local < need && steps < max_steps) {
     if (hand >= blocks.size()) hand = 0;  // wrap
-    const auto& meta = blocks[hand];
+    auto& meta = blocks[hand];
 
     if (meta.visited) {
-      // Second chance — clear the bit and advance. ClearVisited is a
-      // brief unique lock on TieredStore::counts_mu_.
+      // Second chance — clear the bit and advance. ClearVisited
+      // clears the PERSISTENT bit in the store (brief unique lock on
+      // TieredStore::counts_mu_); we ALSO clear it in our local
+      // snapshot copy so the next sweep through this pass sees the
+      // block as unvisited. Without the local clear, the snapshot's
+      // visited flag stays true forever (it's a point-in-time copy),
+      // the hand re-grants a second chance every sweep, and the pass
+      // makes no progress until max_steps — which test_eviction's
+      // all-visited convergence case caught.
       store_->ClearVisited(meta.id);
+      meta.visited = false;
       ++hand;
     } else {
       // Victim. Try Demote first (DRAM→SSD, HBM→DRAM); if that fails
