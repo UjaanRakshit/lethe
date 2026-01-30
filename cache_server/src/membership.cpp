@@ -205,7 +205,14 @@ void Membership::SendHeartbeatsToAllPeers() {
   const std::uint64_t epoch_at_send = epoch_.load(std::memory_order_relaxed);
   std::vector<std::future<std::pair<std::string, bool>>> futs;
   futs.reserve(targets.size());
-  for (auto& [peer_id, address] : targets) {
+  for (auto& target : targets) {
+    // Copy into plain locals before the lambda: clang (C++17) rejects
+    // capturing structured bindings by copy ("reference to local
+    // binding declared in enclosing function"); GCC allows it. Plain
+    // copies are portable across both. The TSan build uses clang, so
+    // this matters.
+    const std::string peer_id = target.first;
+    const std::string address = target.second;
     futs.emplace_back(std::async(std::launch::async,
                                  [this, impl, peer_id, address,
                                   epoch_at_send]() -> std::pair<std::string, bool> {

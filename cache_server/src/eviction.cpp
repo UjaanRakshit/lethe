@@ -158,9 +158,9 @@ void Evictor::Start() {
   if (impl->running.exchange(true)) return;  // already started
 
   // Spawn one thread per tier that has nonzero capacity.
-  auto spawn = [this, impl](Tier tier, std::size_t& hand) {
+  auto spawn = [this, impl](Tier tier) {
     if (store_->capacity_bytes(tier) == 0) return;  // tier not configured
-    impl->threads.emplace_back([this, impl, tier, &hand]() {
+    impl->threads.emplace_back([this, impl, tier]() {
       // Per-thread wake cv kept local — eviction threads only ever
       // self-time. The shared shutdown signal comes from impl->running.
       using namespace std::chrono_literals;
@@ -181,9 +181,9 @@ void Evictor::Start() {
       }
     });
   };
-  spawn(Tier::HBM, impl->hand_hbm);
-  spawn(Tier::DRAM, impl->hand_dram);
-  spawn(Tier::SSD, impl->hand_ssd);
+  spawn(Tier::HBM);
+  spawn(Tier::DRAM);
+  spawn(Tier::SSD);
 }
 
 void Evictor::Shutdown() {
