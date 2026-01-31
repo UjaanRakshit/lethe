@@ -487,3 +487,158 @@ without a free-space search.
 `cache_server/src/ssd_block_store.cpp::AllocSlot`;
 `TieredStoreConfig::ssd_slot_bytes` (configurable per node, default
 64 KiB).
+
+---
+
+## 2026-05-27 — Router ring must include the local node (latent W3 bug)
+
+**Context.** `main.cpp`'s `--peers` parser strips the local node from
+the seed list (the wire format names OTHER nodes). `LetheCache`'s ctor
+passed `cfg_.seed_peers` straight to `Router::SetPeers` — so the
+server-side consistent-hash ring NEVER contained the local node. The
+Python client's `HashRing` is built from the full peer list. The two
+rings disagreed on every routing decision, invisibly, through W4.
+
+**Why invisible until W8.** With the local node absent from its own
+ring, `IsLocalPrimary`/`IsLocalReplica` always returned false. The
+read-repair branch (gated on `we_are_in_route`) never fired, and W4's
+client tests passed anyway because the LocalHit short-circuit handles
+"we have the bytes" before the router, and the client's transparent
+RemoteHit-to-Fetch papered over wrong routing. W8 failover
+re-replication is the first code depending on the server knowing "am I
+in this route" — it dispatched zero blocks until the ring was fixed.
+
+**Decision.** Build the ring from {self} union seed_peers at both
+sites: `LetheCache` ctor and `Membership::OnMembershipChange`. The
+Python `HashRing` already includes self, so the bit-compat invariant
+holds: same input set, same ring.
+
+**Alternatives considered.** Auto-inject self inside
+`Router::SetPeers` (rejected: hides the requirement); stop stripping
+self in `--peers` (rejected: the seed list is "who to dial," and you
+do not dial yourself).
+
+**Cross-references.** `cache_server/src/cache.cpp` (ctor),
+`cache_server/src/membership.cpp::OnMembershipChange`,
+`client/lethe_client/routing.py`.
+
+---
+
+## 2026-05-27 — Failure detector startup guard: PeerInfo::ever_seen
+
+**Context.** `PeerInfo.last_seen` starts at the ctor moment. At
+process start, peers' gRPC servers may not be listening, so the first
+heartbeats fail. Without a guard, `EvaluateSuspicions` compares against
+that stale timestamp and declares every peer dead within `dead_after`
+of startup — observed as "membership change: epoch=1 alive=1 lost=1"
+where a healthy peer got marked dead during normal bring-up.
+
+**Decision.** Add `PeerInfo::ever_seen` (default false).
+`EvaluateSuspicions` skips peers with `ever_seen == false` — "alive by
+assumption" until first proven otherwise. First successful contact in
+EITHER direction (outbound heartbeat reply OR inbound `OnHeartbeat`)
+sets it true; the `dead_after` clock then runs from real wall-clock.
+
+**Alternatives considered.** `last_seen = now + dead_after` grace
+window (rejected: a startup-dead peer is not declared until 2x
+dead_after = 6s, blowing the 3.5s budget); defer first evaluate by one
+dead_after (same problem, plus a magic sleep).
+
+**Rationale.** Separates "never contacted" from "contacted then went
+silent" — only the latter is a failure. Real-death detection latency
+stays exactly `dead_after` because the clock starts at first contact.
+
+**Cross-references.** `cache_server/include/lethe/membership.hpp`,
+`cache_server/src/membership.cpp::EvaluateSuspicions` + the set-sites.
+
+---
+
+## 2026-05-27 — Server-side read-repair disabled at the Lookup path
+
+**Context.** W4 read-repair: on a local Lookup miss where we are in the
+block's route, `FetchFromAny` the replicas and write locally before
+responding. Once the W8 router-self-inclusion fix made
+`we_are_in_route` true, this fired for the first time — and on a
+cold-cache Lookup it fanned out a Fetch RPC per in-route block, blowing
+W4's `test_per_primary_batching` 1s budget. It ALSO recursed: the gRPC
+`Fetch` handler called `Lookup`, so a read-repair Fetch at peer B
+re-entered B's read-repair, which Fetched A, etc.
+
+**Decision.** (1) The `Fetch` RPC handler uses a new non-recursive
+`LetheCache::FetchLocal` (local TieredStore only). (2) Read-repair is
+removed from `cache.cpp::Lookup` for W8; the route-aware `RemoteHit`
+response is retained so the client's transparent fetch still routes.
+
+**Alternatives considered.** Bound read-repair cost (rejected: still
+fans out on every cold lookup, recursion needed fixing anyway); keep it
+and rely on it for failover convergence (rejected: it made the failover
+test pass partly because the test's POLLING Lookups triggered repair —
+convergence must come from proactive re-replication).
+
+**Rationale.** Read-repair is redundant with the client's transparent
+RemoteHit-to-Fetch. Its home is the StreamBlocks bulk-pull path under
+W11 chaos. Failover correctness now rests solely on
+`TriggerReReplication`.
+
+**Cross-references.** `cache_server/src/cache.cpp::Lookup` + `FetchLocal`;
+`cache_server/src/main.cpp` Fetch handler.
+
+---
+
+## 2026-05-27 — Re-replication pushes to ALL route members, not just replicas
+
+**Context.** `Replicator::ReplicateOut` (W4 Insert path) enqueues
+pushes only to a block's REPLICAS, excluding self — correct when the
+caller is the primary. `TriggerReReplication` initially reused it. But
+after a death, a surviving REPLICA can be the only holder of a block
+whose NEW primary lacks it; `ReplicateOut` from that replica pushes to
+replicas only (never the primary), so the primary never converged.
+Failover stalled at ~140/200 blocks at R=2.
+
+**Decision.** `TriggerReReplication` builds the full target set =
+{primary} union replicas minus self, enqueuing a push to each via the
+existing bounded queue + worker pool. Insert dedup makes the
+over-broad push safe (redundant pushes are no-ops).
+
+**Alternatives considered.** A "re-replication mode" flag on
+`ReplicateOut` (rejected: the two callers want different target sets;
+a flag muddies the Insert path's clear "primary to replicas").
+
+**Rationale.** Re-replication's job is "make every current route member
+hold this block" = {primary} union replicas. The Insert path's narrower
+"primary to replicas" is a different op sharing the queue.
+
+**Cross-references.** `cache_server/src/replication.cpp::TriggerReReplication`
+vs `::ReplicateOut`; `tests/integration/test_failover_recovery.py`
+(200/200 convergence, median 2.99s).
+
+---
+
+## 2026-05-27 — SIEVE eviction is a CLOCK-style approximation
+
+**Context.** True SIEVE (NSDI '24) keeps blocks in FIFO insertion order
+with a 1-bit visited flag; the hand walks oldest to newest. Our
+`BlockStore` uses an `unordered_map`, so `Snapshot` returns iteration
+order, not insertion order.
+
+**Decision.** Walk the snapshot in iteration order applying the
+visited-bit second-chance rule — equivalent to CLOCK with a visited
+bit, not strict SIEVE. The visited-bit clear must update BOTH the
+persistent store AND the local snapshot copy within a pass; otherwise
+the second sweep re-reads stale `visited=true` and never evicts (caught
+by `test_eviction`'s all-visited convergence case).
+
+**Alternatives considered.** Maintain an insertion-ordered
+`deque<BlockId>` alongside every BlockStore map (rejected for W8: a
+second locked data structure per Put/Erase for an eviction-quality
+difference that does not show at our scale; revisit in W11 if CLOCK
+underperforms).
+
+**Rationale.** The visited bit — the part that makes SIEVE competitive
+with LRU — is preserved exactly. Insertion order is a second-order
+effect. Documenting the deviation beats claiming "SIEVE" and shipping
+CLOCK.
+
+**Cross-references.** `cache_server/src/eviction.cpp::RunPassForTier`;
+`cache_server/include/lethe/eviction.hpp`; `tests/unit/test_eviction.cpp`.
+
