@@ -82,6 +82,12 @@ logger = logging.getLogger(__name__)
 # Reset by the test between phases via SCHEDULER_LOOKUP_LOG.clear().
 SCHEDULER_LOOKUP_LOG: list[dict] = []
 
+# Worker-side store log (observability only). save_kv_layer appends one
+# entry per insert batch so the W9 diagnostic can confirm the prefill
+# phase actually stored blocks, and under WHICH (layer_id) key — needed
+# to ground-truth the scheduler-probe-vs-store keying. No behavior change.
+WORKER_STORE_LOG: list[dict] = []
+
 
 # ---------------------------------------------------------------------------
 # Tensor (de)serialization helpers
@@ -688,6 +694,17 @@ class LetheCacheConnector(KVConnectorBase_V1):
         )
         with self._inflight_saves_lock:
             self._inflight_saves.append(future)
+
+        # W9 diagnostic (observability only): record what we stored and
+        # under which layer_id, so the disagg test can ground-truth that
+        # the prefill phase saved blocks and confirm the keying. Records
+        # the chained-hash hex prefixes for the first few blocks.
+        WORKER_STORE_LOG.append({
+            "layer_name": layer_name,
+            "layer_id": layer_id,
+            "n_blocks": len(insert_batch),
+            "hash_hex": [bid.hash.hex() for bid, _ in insert_batch[:64]],
+        })
 
     def wait_for_save(self) -> None:
         """Drain all pending save Inserts submitted this forward.

@@ -96,22 +96,31 @@ def run_disagg(llm: LLM, lethe_address: str, block_size: int,
 
     for i, prompt in enumerate(PROMPTS):
         # --- Phase 1: prefill (export KV to Lethe) ---
+        vllm_hook.WORKER_STORE_LOG.clear()
         prefill = seq.prefill(prompt)
         hashes = seq.prefix_block_hashes(prefill.prompt_token_ids)
+        store_log = list(vllm_hook.WORKER_STORE_LOG)
 
         # --- Round-trip probe (acceptance B): does Lethe contain P's
-        # blocks after prefill? Probe BOTH layer=0 (the connector's
-        # scheduler presence-probe key) AND a sweep of real layer ids,
-        # so we can tell whether the presence-probe scheme actually
-        # matches what save_kv_layer stored.
+        # blocks after prefill? Probe layer=0 (the connector's scheduler
+        # presence-probe key) AND the REAL layer_ids the save path used
+        # (from WORKER_STORE_LOG), so we can tell whether the
+        # presence-probe scheme matches what save_kv_layer stored.
         probe_layer0 = [BlockId(hash=h, layer=0, head_group=0, model_id=0)
                         for h in hashes]
         r0 = probe_client.lookup(probe_layer0, request_id=f"probe0-{i}")
         layer0_hits = len(r0.hits)
 
-        # Sweep candidate layer ids: derive them the way the connector
-        # does, from the engine's actual layer names.
-        layer_sweep_hits = _probe_real_layers(llm, probe_client, hashes, i)
+        # Probe with a real stored layer_id (if any save happened).
+        real_layer_hits = {"max_hits": 0, "n_layers_stored": len(store_log)}
+        if store_log and hashes:
+            lid = store_log[0]["layer_id"]
+            ids = [BlockId(hash=h, layer=lid, head_group=0, model_id=0)
+                   for h in hashes]
+            rr = probe_client.lookup(ids, request_id=f"probeR-{i}")
+            real_layer_hits["max_hits"] = len(rr.hits)
+            real_layer_hits["layer_id_probed"] = lid
+        layer_sweep_hits = real_layer_hits
 
         # --- Phase 2: decode (import KV from Lethe) ---
         vllm_hook.SCHEDULER_LOOKUP_LOG.clear()
@@ -136,57 +145,6 @@ def run_disagg(llm: LLM, lethe_address: str, block_size: int,
             "decode_wall_s": decode.wall_seconds,
         })
     return results
-
-
-def _probe_real_layers(llm, probe_client, hashes, prompt_index):
-    """Probe Lethe for the prefix blocks under the REAL per-layer ids
-    the connector would have stored, to ground-truth whether anything
-    was saved at all. Returns the max hits found for any single layer
-    (a full prefix on one layer == the prefix is genuinely stored)."""
-    import hashlib
-    from lethe_client.client import BlockId
-
-    # Enumerate layer names from the model. vLLM exposes them on the
-    # model runner; fall back to a name pattern if we can't reach them.
-    layer_names = _enumerate_layer_names(llm)
-    if not layer_names:
-        return {"note": "could not enumerate layer names", "max_hits": None}
-
-    def layer_id_for(name: str) -> int:
-        return int.from_bytes(hashlib.sha256(name.encode()).digest()[:4],
-                              "little")
-
-    best = 0
-    best_layer = None
-    for name in layer_names[:4]:  # sample a few layers; enough to confirm
-        lid = layer_id_for(name)
-        ids = [BlockId(hash=h, layer=lid, head_group=0, model_id=0)
-               for h in hashes]
-        r = probe_client.lookup(ids, request_id=f"probeL-{prompt_index}")
-        if len(r.hits) > best:
-            best = len(r.hits)
-            best_layer = name
-    return {"max_hits": best, "best_layer": best_layer,
-            "n_layers_sampled": min(4, len(layer_names))}
-
-
-def _enumerate_layer_names(llm):
-    """Best-effort: dig the attention layer names out of the engine so
-    we can reconstruct the connector's per-layer BlockId.layer values."""
-    try:
-        # vLLM 0.19.1: the forward-context registry holds layer names,
-        # but it's only populated during a forward. Easier: walk the
-        # model's named_modules for attention layers.
-        engine = llm.llm_engine
-        # Deep reach; wrapped in try because internals shift.
-        model = engine.model_executor.driver_worker.model_runner.model
-        names = []
-        for n, _ in model.named_modules():
-            if n.endswith(".attn") or ".attn" in n:
-                names.append(n)
-        return names
-    except Exception:
-        return []
 
 
 def main() -> int:
