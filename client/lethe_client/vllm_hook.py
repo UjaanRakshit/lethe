@@ -67,6 +67,23 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# W9 diagnostic instrumentation (observability only — does NOT change any
+# save/load/lookup behavior or method signatures).
+# ---------------------------------------------------------------------------
+#
+# The scheduler-role connector appends one entry per
+# get_num_new_matched_tokens call here. The W9 disaggregation test reads
+# this in-process (the connector lives in the same process as the engine
+# driver) to confirm the decode phase actually matched blocks in Lethe —
+# i.e. that a token-identical pass is green because Lethe served the KV,
+# not because vLLM recomputed everything (a false green). The W9 prompt
+# explicitly asks for this hit count.
+#
+# Reset by the test between phases via SCHEDULER_LOOKUP_LOG.clear().
+SCHEDULER_LOOKUP_LOG: list[dict] = []
+
+
+# ---------------------------------------------------------------------------
 # Tensor (de)serialization helpers
 # ---------------------------------------------------------------------------
 
@@ -784,6 +801,17 @@ class LetheCacheConnector(KVConnectorBase_V1):
         # ``num_computed_tokens`` is also block-aligned (the native
         # prefix cache returns whole-block counts).
         hit_tokens = contiguous_hits * self._block_size
+
+        # W9 diagnostic: record the lookup outcome so the disagg test can
+        # confirm the decode phase matched blocks in Lethe. Append-only;
+        # the test clears the log between phases. No behavior change.
+        SCHEDULER_LOOKUP_LOG.append({
+            "request_id": request.request_id,
+            "n_blocks_probed": n_blocks,
+            "contiguous_hits": contiguous_hits,
+            "hit_tokens": hit_tokens,
+            "num_computed_tokens": num_computed_tokens,
+        })
 
         # Defensive clamp. In theory ``hit_tokens >= num_computed_tokens``
         # because both walk the same prefix from index 0 and Lethe is

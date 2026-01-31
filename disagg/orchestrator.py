@@ -1,97 +1,143 @@
-"""Disaggregated prefill/decode orchestrator (W9).
+"""Disaggregated prefill/decode — single-engine role sequencing (W9).
 
-DistServe-style architecture:
-  - Prefill workers process incoming prompts and produce KV blocks.
-  - Lethe stores the KV blocks (sharded by prefix-chained hash).
-  - Decode workers fetch the KV blocks from Lethe and continue generation.
+HONEST SCOPE NOTE. This is NOT physical two-instance disaggregation
+(separate prefill and decode GPU workers). It is ONE vLLM engine driven
+in two role-sequenced phases against a Lethe cluster:
 
-This orchestrator is the front door: it receives requests, schedules them
-onto a prefill worker, waits for prefill completion + KV insert, then routes
-the decode portion to a decode worker. The decode worker's vLLM connector
-pulls the KV blocks from Lethe transparently.
+  Phase 1 (prefill role): run prompt P through the engine. The
+    LetheCacheConnector's save path exports P's KV blocks to Lethe.
+  Phase 2 (decode role): run the SAME prompt P again. The connector's
+    get_num_new_matched_tokens finds P's blocks in Lethe, start_load_kv
+    pulls them into the paged-KV buffer, and decode proceeds WITHOUT
+    recomputing the prefix.
 
-W9 milestone: end-to-end token generation through two vLLM instances with
-Lethe as the KV transport.
+The KV genuinely round-trips through Lethe between the phases — that is
+the disaggregated KV TRANSPORT PATH being validated. Physical worker
+separation (two engines, two GPUs) is deferred to W12 on PACE, where
+48-80 GB VRAM makes a real prefill/decode split trivial. Until then,
+naming things "prefill_worker process" / "decode_worker process" would
+be dishonest — there is one process, one engine, two phases.
+
+CRITICAL CONFIG. The engine MUST be built with
+`enable_prefix_caching=False`. With native prefix caching ON, vLLM would
+cache P's KV after phase 1 and serve phase 2 from its own cache, so the
+decode phase would never touch Lethe — a false green. Disabling it makes
+Lethe the only external-cache path. (Verified in vllm 0.19.1: the
+scheduler calls the connector's get_num_new_matched_tokens whenever a
+connector is configured and the request has zero locally-computed
+tokens; with caching off, local is always zero, so Lethe is consulted.)
+
+This module is import-light: it does NOT import vllm at module scope, so
+it can be imported by tooling that only wants the orchestration shape.
+The engine is passed in already-built (the test's child process builds
+it with the connector configured).
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import uuid
+import time
 from dataclasses import dataclass, field
-from typing import Optional
-
-from lethe_client import LetheClient
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 
 @dataclass
-class GenerationRequest:
+class PhaseResult:
+    """Outcome of one role phase."""
+
+    token_ids: list[int]
+    prompt_token_ids: list[int]
+    wall_seconds: float
+
+
+@dataclass
+class DisaggResult:
+    """Full prefill→decode round-trip outcome for one prompt."""
+
     prompt: str
-    max_tokens: int = 256
-    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    prefill: PhaseResult
+    decode: PhaseResult
+    # Lethe block hashes for the prompt prefix (whole blocks), derived
+    # from the EXACT token_ids vLLM used so they match the connector's
+    # stored hashes bit-for-bit.
+    prefix_block_hashes: list[bytes] = field(default_factory=list)
 
 
-@dataclass
-class WorkerEndpoint:
-    name: str
-    address: str            # host:port for the vLLM HTTP server
-    role: str               # "prefill" or "decode"
-    in_flight: int = 0
-    max_concurrent: int = 8
+class RoleSequencedDisagg:
+    """Drives one vLLM engine through prefill then decode phases.
 
+    The engine must already have the LetheCacheConnector configured and
+    `enable_prefix_caching=False`. See module docstring.
+    """
 
-class DisaggOrchestrator:
-    def __init__(
-        self,
-        prefill_workers: list[WorkerEndpoint],
-        decode_workers: list[WorkerEndpoint],
-        lethe_address: str,
-    ):
-        self.prefill_workers = prefill_workers
-        self.decode_workers = decode_workers
-        self.lethe = LetheClient(primary_address=lethe_address)
+    def __init__(self, llm: Any, block_size: int = 16) -> None:
+        self._llm = llm
+        self._block_size = block_size
 
-    async def generate(self, req: GenerationRequest) -> str:
-        prefill = self._pick_least_loaded(self.prefill_workers)
-        decode = self._pick_least_loaded(self.decode_workers)
-        logger.info(
-            "req=%s prefill=%s decode=%s", req.request_id, prefill.name, decode.name
+    def prefill(self, prompt: str) -> PhaseResult:
+        """Phase 1: run P through the engine so the connector exports
+        P's KV to Lethe.
+
+        max_tokens: vLLM 0.19.1 requires max_tokens >= 1 (a 0-token
+        SamplingParams is rejected at validation). We use 1 and discard
+        the single decoded token — the prefill computes (and the
+        connector saves) the WHOLE prompt's KV regardless of how many
+        tokens we then decode. The saved KV is the prompt prefix, which
+        is all the decode phase needs.
+        """
+        from vllm import SamplingParams
+
+        sp = SamplingParams(temperature=0.0, max_tokens=1, seed=42)
+        t0 = time.monotonic()
+        out = self._llm.generate([prompt], sp)
+        wall = time.monotonic() - t0
+        o = out[0]
+        return PhaseResult(
+            token_ids=list(o.outputs[0].token_ids),
+            prompt_token_ids=list(o.prompt_token_ids or []),
+            wall_seconds=wall,
         )
 
-        # 1) Prefill: worker runs prompt through transformer, writes KV
-        #    blocks into Lethe via the connector hook (W1).
-        await self._invoke_prefill(prefill, req)
+    def decode(self, prompt: str, max_tokens: int = 64) -> PhaseResult:
+        """Phase 2: run the SAME P again. The connector loads P's KV
+        from Lethe (no prefix recompute) and decode generates."""
+        from vllm import SamplingParams
 
-        # 2) Decode: worker connects to Lethe, fetches KV for the prompt
-        #    tokens, then begins autoregressive decoding.
-        return await self._invoke_decode(decode, req)
+        sp = SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=42)
+        t0 = time.monotonic()
+        out = self._llm.generate([prompt], sp)
+        wall = time.monotonic() - t0
+        o = out[0]
+        return PhaseResult(
+            token_ids=list(o.outputs[0].token_ids),
+            prompt_token_ids=list(o.prompt_token_ids or []),
+            wall_seconds=wall,
+        )
 
-    async def _invoke_prefill(self, w: WorkerEndpoint, req: GenerationRequest):
-        # TODO(W9): POST to w.address with prompt, max_tokens=0, kv_export=True.
-        raise NotImplementedError
+    def prefix_block_hashes(self, prompt_token_ids: list[int]) -> list[bytes]:
+        """Chained BLAKE3 block hashes for the whole-block prefix, using
+        the EXACT token_ids vLLM used (so they match the connector's
+        stored BlockId hashes). Mirrors the connector's hash chain.
+        """
+        from lethe_client.routing import chained_block_hash
 
-    async def _invoke_decode(self, w: WorkerEndpoint, req: GenerationRequest) -> str:
-        # TODO(W9): POST to w.address with prompt (so it knows the prefix
-        #    hash chain), max_tokens=req.max_tokens, kv_import=True.
-        raise NotImplementedError
+        n_blocks = len(prompt_token_ids) // self._block_size
+        out: list[bytes] = []
+        running = b"\x00" * 32
+        for i in range(n_blocks):
+            start = i * self._block_size
+            block_tokens = prompt_token_ids[start : start + self._block_size]
+            running = chained_block_hash(running, block_tokens)
+            out.append(running)
+        return out
 
-    @staticmethod
-    def _pick_least_loaded(pool: list[WorkerEndpoint]) -> WorkerEndpoint:
-        return min(pool, key=lambda w: w.in_flight / max(1, w.max_concurrent))
-
-
-async def _demo():
-    orch = DisaggOrchestrator(
-        prefill_workers=[WorkerEndpoint("p0", "http://localhost:8001", "prefill")],
-        decode_workers=[WorkerEndpoint("d0", "http://localhost:8101", "decode")],
-        lethe_address="localhost:50051",
-    )
-    out = await orch.generate(GenerationRequest(prompt="Hello, "))
-    print(out)
-
-
-if __name__ == "__main__":
-    asyncio.run(_demo())
+    def run(self, prompt: str, max_tokens: int = 64) -> DisaggResult:
+        """Prefill then decode for one prompt; bundle the result."""
+        prefill = self.prefill(prompt)
+        decode = self.decode(prompt, max_tokens=max_tokens)
+        hashes = self.prefix_block_hashes(prefill.prompt_token_ids)
+        return DisaggResult(
+            prompt=prompt,
+            prefill=prefill,
+            decode=decode,
+            prefix_block_hashes=hashes,
+        )
