@@ -173,9 +173,12 @@ def main() -> int:
 
     if args.mode == "vanilla":
         results = run_vanilla(llm, args.max_tokens)
+        counters = {}
     else:
         results = run_disagg(llm, args.lethe_address, args.block_size,
                              args.max_tokens)
+        from lethe_client import vllm_hook
+        counters = dict(vllm_hook.CALL_COUNTERS)
 
     out = {
         "mode": args.mode,
@@ -185,6 +188,7 @@ def main() -> int:
         "load_seconds": load_s,
         "vram_peak_bytes": int(torch.cuda.max_memory_allocated())
         if torch.cuda.is_available() else 0,
+        "connector_call_counters": counters,
         "results": results,
     }
     print(json.dumps(out))

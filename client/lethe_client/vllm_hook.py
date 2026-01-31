@@ -88,6 +88,15 @@ SCHEDULER_LOOKUP_LOG: list[dict] = []
 # to ground-truth the scheduler-probe-vs-store keying. No behavior change.
 WORKER_STORE_LOG: list[dict] = []
 
+# Coarse method-call counters (observability only) to pin down exactly
+# which connector hooks vLLM invokes and what they produced. Lets the
+# W9 diagnostic localize where the save/load chain breaks.
+CALL_COUNTERS: dict[str, int] = {}
+
+
+def _bump(name: str, n: int = 1) -> None:
+    CALL_COUNTERS[name] = CALL_COUNTERS.get(name, 0) + n
+
 
 # ---------------------------------------------------------------------------
 # Tensor (de)serialization helpers
@@ -585,15 +594,19 @@ class LetheCacheConnector(KVConnectorBase_V1):
             raise RuntimeError(
                 "save_kv_layer called on non-WORKER role connector"
             )
+        _bump("save_kv_layer_called")
 
         try:
             metadata = self._get_connector_metadata()
         except AssertionError:
             # No metadata bound for this forward — nothing to save.
+            _bump("save_no_metadata")
             return
         if not isinstance(metadata, LetheConnectorMetadata):
+            _bump("save_wrong_metadata_type")
             return
         if not metadata.stores:
+            _bump("save_empty_stores")
             return
 
         # Layer shape: leading 2 is K|V, dim 1 is num_pages, dim 2 is
@@ -747,6 +760,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         scheduling iteration (vllm/v1/core/sched/scheduler.py:619),
         same thread as ``build_connector_meta``. No lock required.
         """
+        _bump("get_num_new_matched_tokens")
         token_ids = request.prompt_token_ids or []
         if not token_ids:
             return (0, False)
@@ -854,6 +868,8 @@ class LetheCacheConnector(KVConnectorBase_V1):
         Threading: same single-threaded scheduler contract as
         ``get_num_new_matched_tokens``.
         """
+        _bump("update_state_after_alloc")
+        _bump("update_state_external_tokens", max(0, num_external_tokens))
         if num_external_tokens <= 0:
             return
 
@@ -901,6 +917,8 @@ class LetheCacheConnector(KVConnectorBase_V1):
         replication wave-shaping.
         """
         meta = LetheConnectorMetadata(block_size=self._block_size)
+        _bump("build_connector_meta")
+        _bump("scheduled_new_reqs", len(scheduler_output.scheduled_new_reqs))
 
         for new_req in scheduler_output.scheduled_new_reqs:
             token_ids = new_req.prompt_token_ids or []
@@ -955,4 +973,6 @@ class LetheCacheConnector(KVConnectorBase_V1):
                     )
                 )
 
+        _bump("meta_store_blocks", sum(len(p.blocks) for p in meta.stores))
+        _bump("meta_load_blocks", sum(len(p.blocks) for p in meta.loads))
         return meta
