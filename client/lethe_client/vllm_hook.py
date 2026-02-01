@@ -162,10 +162,30 @@ def _layer_id_for(layer_name: str) -> int:
     """Deterministic uint32 derived from layer_name. Stable across
     processes (unlike Python's randomized hash()), so a save in run B
     and a load in run C use the same BlockId.layer value.
+
+    Note: real layer ids are sha256-derived and effectively never 0,
+    so layer=0 is reserved for the presence marker (see
+    _PRESENCE_LAYER below).
     """
     return int.from_bytes(
         hashlib.sha256(layer_name.encode()).digest()[:4], "little"
     )
+
+
+# W9 presence-marker scheme. The scheduler-side get_num_new_matched_tokens
+# detects whether a prefix block is cached by probing Lethe with
+# BlockId(layer=_PRESENCE_LAYER). But the actual per-layer KV is stored
+# under layer=_layer_id_for(layer_name) (non-zero), and the C++
+# BlockIdHash keys on layer — so a layer=0 probe could never match the
+# real KV blocks. save_kv_layer therefore ALSO writes a tiny presence
+# marker per block at layer=_PRESENCE_LAYER. The marker is never loaded
+# into the KV cache (start_load_kv fetches the real per-layer blocks);
+# it exists solely so the scheduler can answer "is this prefix cached?"
+# Without it the load path never fires and the disaggregated decode
+# silently recomputes the whole prefix (the W1.4 false green that W9's
+# hit-count gate surfaced).
+_PRESENCE_LAYER = 0
+_PRESENCE_MARKER = b"\x01"
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +712,19 @@ class LetheCacheConnector(KVConnectorBase_V1):
                     model_id=self._model_id,
                 )
                 insert_batch.append((block_id, block_bytes))
+                # W9 presence marker (see _PRESENCE_LAYER docstring). One
+                # tiny block per chained_hash at layer=0 so the scheduler's
+                # layer=0 presence probe can detect this block is cached.
+                # Idempotent across the model's layers — every layer's
+                # save_kv_layer appends the same marker BlockId, and the
+                # server dedups by BlockId, so only the first lands.
+                marker_id = BlockId(
+                    hash=spec.chained_hash,
+                    layer=_PRESENCE_LAYER,
+                    head_group=0,
+                    model_id=self._model_id,
+                )
+                insert_batch.append((marker_id, _PRESENCE_MARKER))
 
         if not insert_batch:
             return
@@ -789,7 +822,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         probe_ids = [
             BlockId(
                 hash=h,
-                layer=0,
+                layer=_PRESENCE_LAYER,  # matches save_kv_layer's marker
                 head_group=0,
                 model_id=self._model_id,
             )
