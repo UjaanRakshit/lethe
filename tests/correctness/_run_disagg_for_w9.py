@@ -32,6 +32,12 @@ os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
 # from greedy + seed + enforce_eager + one-prompt-per-generate. Setting
 # this is harmless and documents intent.
 os.environ.setdefault("VLLM_FORCE_DETERMINISTIC", "1")
+# Run the engine core (scheduler) + worker IN THIS PROCESS. vLLM v1
+# defaults to a multiprocess engine where the connector instances live
+# in a child process — their module-global diagnostics (SCHEDULER_LOOKUP_
+# LOG / WORKER_STORE_LOG / CALL_COUNTERS) would then be invisible here.
+# Single-process keeps them observable and does not change token output.
+os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
 import torch  # noqa: E402
 from vllm import LLM, SamplingParams  # noqa: E402
