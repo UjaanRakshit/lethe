@@ -866,6 +866,20 @@ class LetheCacheConnector(KVConnectorBase_V1):
         # prefix cache returns whole-block counts).
         hit_tokens = contiguous_hits * self._block_size
 
+        # Leave at least one block to compute. vLLM needs >=1 new token
+        # to run a forward pass (it produces the first decode token's
+        # logits); the scheduler asserts num_new_tokens > 0
+        # (scheduler.py:681). If the ENTIRE prompt is externally cached,
+        # reporting it all would make num_new_tokens == 0 and crash the
+        # engine. vLLM's own native prefix cache holds back the last
+        # block for exactly this reason; we mirror it. This only bites
+        # when num_prompt_tokens is an exact multiple of block_size AND
+        # every block hit — otherwise the trailing partial block is
+        # always computed and >=1 token already remains.
+        num_prompt_tokens = len(token_ids)
+        if hit_tokens >= num_prompt_tokens:
+            hit_tokens = max(0, hit_tokens - self._block_size)
+
         # W9 diagnostic: record the lookup outcome so the disagg test can
         # confirm the decode phase matched blocks in Lethe. Append-only;
         # the test clears the log between phases. No behavior change.
