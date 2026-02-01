@@ -42,7 +42,13 @@ os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 import torch  # noqa: E402
 from vllm import LLM, SamplingParams  # noqa: E402
 
-sys.path.insert(0, os.path.dirname(__file__))
+# Make `disagg` and the shared prompt set importable regardless of how
+# this child is launched (repo root for `import disagg`, this dir for
+# _run_vllm_for_w14). lethe_client is pip-installed in the venv.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
+sys.path.insert(0, _THIS_DIR)
+sys.path.insert(0, _REPO_ROOT)
 from _run_vllm_for_w14 import PROMPTS  # noqa: E402  shared 10-prompt set
 
 
