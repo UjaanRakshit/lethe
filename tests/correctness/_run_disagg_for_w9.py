@@ -62,9 +62,10 @@ def build_engine(mode: str, lethe_address: str, block_size: int,
         gpu_memory_utilization=0.85,
         block_size=block_size,
         seed=seed,
-        # The W9 isolation switch: native prefix cache OFF so Lethe is
-        # the only external-cache path the decode phase can hit.
-        enable_prefix_caching=False,
+        # native prefix cache OFF for vanilla/disagg (Lethe is the only
+        # external-cache path); ON for the rule-2 "native" control so it
+        # serves the prefix as a cache HIT on the same schedule as disagg.
+        enable_prefix_caching=(mode == "native"),
     )
     if mode == "disagg":
         from vllm.config import KVTransferConfig
@@ -86,6 +87,30 @@ def run_vanilla(llm: LLM, max_tokens: int) -> list[dict]:
     results = []
     for i, prompt in enumerate(PROMPTS):
         out = llm.generate([prompt], sp)
+        o = out[0]
+        results.append({
+            "prompt_index": i,
+            "output_token_ids": list(o.outputs[0].token_ids),
+            "num_output_tokens": len(o.outputs[0].token_ids),
+        })
+    return results
+
+
+def run_native(llm: LLM, max_tokens: int) -> list[dict]:
+    """Rule-2 control: vLLM's OWN prefix cache serves the prefix on the
+    SAME hit/miss schedule as disagg. Two phases per prompt mirroring
+    run B: a warm-up generate (max_tokens=1) populates the native cache
+    with P's prefix, then a decode generate hits it. This is the
+    apples-to-apples comparison for CLAUDE.md rule 2 — "same set of
+    cache hits vs misses" — whereas vanilla full-recompute is on the
+    other side of the cache boundary.
+    """
+    warm = SamplingParams(temperature=0.0, max_tokens=1, seed=42)
+    decode = SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=42)
+    results = []
+    for i, prompt in enumerate(PROMPTS):
+        _ = llm.generate([prompt], warm)        # populate native cache
+        out = llm.generate([prompt], decode)    # hit native cache, decode
         o = out[0]
         results.append({
             "prompt_index": i,
@@ -161,7 +186,8 @@ def run_disagg(llm: LLM, lethe_address: str, block_size: int,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["vanilla", "disagg"], required=True)
+    ap.add_argument("--mode", choices=["vanilla", "native", "disagg"],
+                    required=True)
     ap.add_argument("--lethe-address", default=None)
     ap.add_argument("--model", default="google/gemma-3-1b-it")
     ap.add_argument("--block-size", type=int, default=16)
@@ -185,6 +211,9 @@ def main() -> int:
 
     if args.mode == "vanilla":
         results = run_vanilla(llm, args.max_tokens)
+        counters = {}
+    elif args.mode == "native":
+        results = run_native(llm, args.max_tokens)
         counters = {}
     else:
         results = run_disagg(llm, args.lethe_address, args.block_size,

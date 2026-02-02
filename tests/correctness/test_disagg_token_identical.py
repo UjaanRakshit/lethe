@@ -1,31 +1,45 @@
-"""W9 acceptance gate: disaggregated prefill/decode is token-identical
-to vanilla single-pass, AND the decode phase genuinely loads KV from
-Lethe (not a false green via recompute).
+"""W9 acceptance gate: Lethe-disaggregated prefill/decode produces the
+SAME tokens as vLLM's native prefix cache on the SAME hit/miss
+schedule, AND the decode phase genuinely loads KV from Lethe (not a
+false green via recompute).
 
-Two runs, separate subprocesses (isolated vLLM engines):
+Three runs, separate subprocesses (isolated vLLM engines):
 
-  Run A (control): vanilla single-pass generate per prompt. No Lethe
-    connector. enable_prefix_caching=False, greedy, seed=42.
-  Run B (disaggregated): LetheCacheConnector on, enable_prefix_caching
-    =False. Per prompt: a PREFILL phase exports P's KV to Lethe, then a
-    DECODE phase imports it from Lethe and generates. The KV genuinely
-    round-trips through Lethe between phases.
+  NATIVE (rule-2 control): vLLM's OWN prefix cache. enable_prefix_
+    caching=True, no connector. Per prompt: a warm-up generate
+    populates the native cache with P's prefix, then a decode generate
+    HITS it. This puts the prefix on the cache-HIT side of the
+    boundary — the same schedule disagg runs on.
+  DISAGG (B): LetheCacheConnector on, enable_prefix_caching=False.
+    Per prompt: a PREFILL phase exports P's KV to Lethe, then a DECODE
+    phase imports it from Lethe and generates. Prefix is a cache HIT
+    served by Lethe.
+  VANILLA (informational): single-pass full recompute, no cache. This
+    is on the cache-MISS side of the boundary.
+
+Why NATIVE is the gate, not VANILLA. CLAUDE.md rule 2 is explicit:
+the claim is NOT bit-identical ACROSS the cache-hit/cache-miss
+boundary (attention FP reductions are non-associative on GPU). The
+claim IS: given the same set of cache hits vs misses, Lethe+vLLM
+produces the same tokens as vLLM serving those same hits via its
+native prefix cache. So the apples-to-apples comparison is
+DISAGG (Lethe-hit) vs NATIVE (vLLM-hit). Comparing DISAGG vs VANILLA
+crosses the boundary and is EXPECTED to drift on some prompts — which
+it does (W9 first observed 3/10 prompts diverging at late token
+positions, the classic FP-drift signature). VANILLA is kept only as
+an informational record of that boundary effect.
 
 Assertions:
-  * token_ids_A[i] == token_ids_B[i] for all 10 prompts (the W9
-    correctness gate — cache-equivalence on a fixed hit/miss schedule,
-    per CLAUDE.md rule 2). A mismatch is stop-condition 1.
-  * For prompts with >= 2 whole prefix blocks, run B's decode phase
+  * token_ids_DISAGG[i] == token_ids_NATIVE[i] for all 10 prompts
+    (the rule-2 gate). A mismatch is stop-condition 1.
+  * For prompts with >= 2 whole prefix blocks, DISAGG's decode phase
     reports decode_hit_tokens > 0 — proving Lethe SERVED the KV rather
-    than vLLM recomputing (the false-green guard, stop-condition 2).
-    (A 1-block prompt holds its only block back so >=1 token computes,
-    so decode_hit_tokens can legitimately be 0 there — see the
-    connector's hold-back-last-block logic.)
+    than vLLM recomputing (false-green guard, stop-condition 2).
 
 Diagnostics → tests/correctness/w9_results.json.
 
-This is single-engine role-sequenced disaggregation (one engine, two
-phases). Physical two-instance disaggregation is W12/PACE. See
+Single-engine role-sequenced disaggregation (one engine, two phases).
+Physical two-instance disaggregation is W12/PACE. See
 disagg/orchestrator.py and docs/weekly/W9.md.
 
 Skips when vllm/torch missing, CUDA unavailable, or lethe_server not
@@ -135,10 +149,12 @@ def test_disagg_token_identical():
 
     diagnostics: dict = {"model": "google/gemma-3-1b-it", "lethe_address": addr}
     try:
-        print("=== run A (vanilla control) ===", flush=True)
-        run_a = _run_child("vanilla", None)
-        print("=== run B (disaggregated via Lethe) ===", flush=True)
+        print("=== NATIVE (vLLM-prefix-cache control, rule-2 gate) ===", flush=True)
+        run_native = _run_child("native", None)
+        print("=== DISAGG (Lethe) ===", flush=True)
         run_b = _run_child("disagg", addr)
+        print("=== VANILLA (informational: full recompute) ===", flush=True)
+        run_vanilla = _run_child("vanilla", None)
     finally:
         server.terminate()
         try:
@@ -147,48 +163,66 @@ def test_disagg_token_identical():
             server.kill()
             server.wait()
 
-    a = run_a["results"]
+    nat = run_native["results"]
     b = run_b["results"]
-    assert len(a) == len(b), f"prompt count mismatch A={len(a)} B={len(b)}"
+    van = run_vanilla["results"]
+    assert len(nat) == len(b) == len(van), (
+        f"prompt count mismatch native={len(nat)} disagg={len(b)} "
+        f"vanilla={len(van)}"
+    )
 
     per_prompt = []
-    diverged = []
-    for i in range(len(a)):
-        ta = a[i]["output_token_ids"]
+    diverged = []          # DISAGG vs NATIVE (the gate)
+    diverged_vanilla = []  # DISAGG vs VANILLA (informational)
+    for i in range(len(b)):
+        tn = nat[i]["output_token_ids"]
         tb = b[i]["output_token_ids"]
-        match = (ta == tb)
+        tv = van[i]["output_token_ids"]
+        match_native = (tb == tn)
+        match_vanilla = (tb == tv)
         bi = b[i]
         per_prompt.append({
             "prompt_index": i,
-            "n_tokens_a": len(ta),
-            "n_tokens_b": len(tb),
-            "match": match,
-            "first_diff": (next((j for j in range(min(len(ta), len(tb)))
-                                 if ta[j] != tb[j]), None) if not match else None),
+            "n_tokens_native": len(tn),
+            "n_tokens_disagg": len(tb),
+            "match_native": match_native,
+            "match_vanilla": match_vanilla,
+            "first_diff_native": (next((j for j in range(min(len(tn), len(tb)))
+                                        if tn[j] != tb[j]), None)
+                                  if not match_native else None),
             "n_prefix_blocks": bi.get("n_prefix_blocks", 0),
             "roundtrip_real_layer_hits": bi.get("roundtrip_real_layer_hits"),
             "decode_hit_tokens": bi.get("decode_hit_tokens", 0),
             "decode_contiguous_hits": bi.get("decode_contiguous_hits", 0),
         })
-        if not match:
+        if not match_native:
             diverged.append(i)
+        if not match_vanilla:
+            diverged_vanilla.append(i)
 
     diagnostics["connector_call_counters"] = run_b.get("connector_call_counters", {})
     diagnostics["per_prompt"] = per_prompt
-    diagnostics["diverged_prompt_indices"] = diverged
-    diagnostics["all_identical"] = (len(diverged) == 0)
-    diagnostics["run_a_load_seconds"] = run_a.get("load_seconds")
-    diagnostics["run_b_load_seconds"] = run_b.get("load_seconds")
+    diagnostics["diverged_vs_native"] = diverged
+    diagnostics["diverged_vs_vanilla"] = diverged_vanilla
+    diagnostics["disagg_matches_native"] = (len(diverged) == 0)
+    diagnostics["note"] = (
+        "Gate = DISAGG vs NATIVE (same cache-hit schedule, per CLAUDE.md "
+        "rule 2). diverged_vs_vanilla is informational — vanilla is full "
+        "recompute (cache-MISS side of the boundary), where FP "
+        "non-associativity legitimately drifts on some prompts."
+    )
     RESULTS_PATH.write_text(json.dumps(diagnostics, indent=2))
     print(f"\nW9 diagnostics → {RESULTS_PATH}")
+    print(f"DISAGG vs NATIVE diverged: {diverged}")
+    print(f"DISAGG vs VANILLA diverged (informational): {diverged_vanilla}")
 
-    # Gate 1: token-identical (stop-condition 1).
+    # Gate 1: DISAGG == NATIVE on the same hit/miss schedule (rule 2).
     if diverged:
-        lines = ["Disagg token-identical FAILED. Per-prompt:"]
+        lines = ["DISAGG != NATIVE (rule-2 gate FAILED). Per-prompt:"]
         for e in per_prompt:
             lines.append(
-                f"  prompt {e['prompt_index']}: match={e['match']} "
-                f"first_diff={e['first_diff']} "
+                f"  prompt {e['prompt_index']}: match_native={e['match_native']} "
+                f"first_diff_native={e['first_diff_native']} "
                 f"decode_hit_tokens={e['decode_hit_tokens']}")
         lines.append(f"\nFull diagnostics: {RESULTS_PATH}")
         pytest.fail("\n".join(lines))
