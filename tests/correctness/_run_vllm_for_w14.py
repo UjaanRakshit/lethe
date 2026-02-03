@@ -147,7 +147,9 @@ PROMPTS: list[str] = [
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["vanilla", "connector"], required=True)
+    parser.add_argument("--mode",
+                        choices=["vanilla", "connector", "native"],
+                        required=True)
     parser.add_argument("--lethe-address", default=None)
     parser.add_argument("--model", default="google/gemma-3-1b-it")
     parser.add_argument("--block-size", type=int, default=16)
@@ -164,6 +166,12 @@ def main() -> int:
         gpu_memory_utilization=0.85,
         block_size=args.block_size,
         seed=args.seed,
+        # W9 rule-2 reframe: native prefix cache ON only for the
+        # "native" control (it must serve the prefix as a cache HIT on
+        # the same schedule as the connector-warm run). vanilla and
+        # connector run with it OFF so they're unambiguously on the
+        # cache-MISS side (vanilla) / Lethe-only path (connector).
+        enable_prefix_caching=(args.mode == "native"),
     )
     if args.mode == "connector":
         if not args.lethe_address:
@@ -196,9 +204,15 @@ def main() -> int:
     _ = llm.generate(["warmup"], sp)
 
     # One prompt at a time so batch composition is constant across runs.
+    # In "native" mode each prompt gets a warm-up generate first so the
+    # prefix lands in vLLM's own prefix cache; the timed decode then
+    # HITS that cache — the rule-2 control for the connector-warm run.
+    warm_sp = SamplingParams(temperature=0.0, max_tokens=1, seed=args.seed)
     t_gen_start = time.time()
     results: list[dict] = []
     for i, prompt in enumerate(PROMPTS):
+        if args.mode == "native":
+            _ = llm.generate([prompt], warm_sp)  # populate native cache
         out = llm.generate([prompt], sp)
         token_ids = list(out[0].outputs[0].token_ids)
         results.append({

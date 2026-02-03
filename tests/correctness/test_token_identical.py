@@ -1,30 +1,37 @@
-"""W1 acceptance gate: three-way control on Gemma-3-1B.
+"""W1 acceptance gate: cache-equivalence control on Gemma-3-1B
+(rule-2 reframed at W9).
 
-Per CLAUDE.md rule 2, with the Lethe connector enabled, vLLM outputs
-must match what vanilla vLLM produces on the *same hit/miss schedule*.
-This test runs three configurations against the same canned prompt
-set and asserts that all three produce token-for-token identical
-output IDs:
+Per CLAUDE.md rule 2, the claim is NOT bit-identical across the
+cache-hit/cache-miss boundary (attention FP reductions are
+non-associative on GPU). The claim IS: given the same set of cache
+hits vs misses, Lethe + vLLM produces the same tokens as vLLM serving
+those same hits via its native prefix cache.
 
-  A. Vanilla vLLM, no Lethe connector.
-  B. vLLM + connector, fresh lethe_server (cold cache).
-  C. vLLM + connector, SAME lethe_server as B (warm cache).
+Four runs (separate subprocesses so process-global engine state can't
+leak between them); the lethe_server is shared between B and C:
 
-The three runs happen in separate subprocesses so vLLM's process-
-global engine state from one run cannot leak into the next. The
-lethe_server subprocess is shared between B and C (cold→warm
-transition is the test).
+  A. vanilla        — no connector, prefix cache OFF. Cache-MISS side.
+  B. connector cold — fresh lethe_server; stores P's KV. MISS side.
+  C. connector warm — same lethe_server; LOADS P's KV from Lethe. HIT side.
+  D. native warm    — vLLM's own prefix cache, warmed. HIT side.
 
-Failure-mode interpretation (per the W1.4 prompt):
-  - A != B: connector is corrupting on miss (likely save_kv_layer
-    overrunning a non-store-eligible path).
-  - A == B but B != C: connector is corrupting on hit
-    (serialization bug, shape mismatch, or wrong block slot in
-    wait_for_layer_load).
-  - A != B != C: fundamentally broken; triage from scratch.
-  - A != B != C with divergence only on long prompts: almost
-    certainly FP non-determinism in the engine, NOT a Lethe bug —
-    the wrong fix here would be to change cache code.
+Two gates:
+  * STORE path: A == B. Both miss-side; the connector's save must not
+    corrupt the computed result.
+  * LOAD path (rule-2 gate): C == D. Lethe-served KV must equal
+    natively-cached KV on the SAME hit schedule.
+
+Why not assert A == C? That crosses the cache-hit/miss boundary and is
+EXPECTED to drift on some prompts under FP non-associativity — rule 2
+explicitly excludes it. (W9 first observed this: disagg-vs-vanilla
+diverged on 3/10 prompts at late token positions, while disagg-vs-
+native matched on all 10.) AC_match is recorded as informational only.
+
+History: before W9's presence-marker fix, the connector's LOAD path
+never fired (the scheduler probed Lethe with layer=0 while save stored
+under per-layer ids), so runs B and C were both miss-side recomputes
+and A==B==C passed as a FALSE GREEN. W9's hit-count gate surfaced it;
+this reframe makes W1.4 genuinely exercise the load path.
 
 Diagnostics dumped to tests/correctness/w1_4_results.json regardless
 of pass/fail.
@@ -166,26 +173,46 @@ def test_token_identical_three_way_control():
     }
 
     try:
-        # Run A: vanilla vLLM. Connector is NOT instantiated.
-        # Done first so the server is freshly empty at run-B start.
-        print("=== run A (vanilla vLLM) ===", flush=True)
+        # Run A: vanilla vLLM (no connector, prefix cache OFF). Cache-MISS
+        # side. Done first so the server is freshly empty at run-B start.
+        print("=== run A (vanilla, cache-miss control) ===", flush=True)
         run_a = _run_child("vanilla")
         diagnostics["runs"]["A_vanilla"] = {
             k: v for k, v in run_a.items() if k != "results"
         }
 
-        # Run B: connector + cold lethe_server (just-started, no inserts yet).
-        print(f"=== run B (connector, cold cache at {addr}) ===", flush=True)
+        # Run B: connector + cold lethe_server. Cache-MISS side; stores
+        # P's KV to Lethe. A==B validates the STORE path doesn't corrupt
+        # the miss-side result.
+        print(f"=== run B (connector cold @ {addr}, stores) ===", flush=True)
         run_b = _run_child("connector", lethe_address=addr)
         diagnostics["runs"]["B_cold"] = {
             k: v for k, v in run_b.items() if k != "results"
         }
 
-        # Run C: connector + SAME lethe_server (now warm — B's saves are still there).
-        print(f"=== run C (connector, warm cache at {addr}) ===", flush=True)
+        # Run C: connector + SAME lethe_server, now warm. The connector
+        # LOADS P's KV from Lethe — cache-HIT side. (Before the W9
+        # presence-marker fix this load never fired; W1.4 was a false
+        # green comparing three miss-side recomputes.)
+        print(f"=== run C (connector warm @ {addr}, LOADS from Lethe) ===",
+              flush=True)
         run_c = _run_child("connector", lethe_address=addr)
         diagnostics["runs"]["C_warm"] = {
             k: v for k, v in run_c.items() if k != "results"
+        }
+
+        # Run D: native vLLM prefix cache, warmed. Cache-HIT side via
+        # vLLM's OWN cache. C==D is the rule-2 gate: KV served by Lethe
+        # must equal KV served by the native cache on the SAME hit
+        # schedule. (Comparing C against vanilla A would cross the
+        # cache-hit/miss boundary, where CLAUDE.md rule 2 says output is
+        # NOT bit-identical — that boundary FP drift is real and
+        # expected; see docs/weekly/W9.md.)
+        print("=== run D (native prefix cache warm, rule-2 control) ===",
+              flush=True)
+        run_d = _run_child("native")
+        diagnostics["runs"]["D_native_warm"] = {
+            k: v for k, v in run_d.items() if k != "results"
         }
     finally:
         server.terminate()
@@ -195,64 +222,75 @@ def test_token_identical_three_way_control():
             server.kill()
             server.wait()
 
-    # Per-prompt three-way compare. Collect per-prompt diffs so we can
-    # see ALL divergences, not just the first.
     n_prompts = len(run_a["results"])
-    assert n_prompts == len(run_b["results"]) == len(run_c["results"]), (
-        f"prompt count mismatch across runs: "
-        f"A={n_prompts}, B={len(run_b['results'])}, C={len(run_c['results'])}"
+    assert (n_prompts == len(run_b["results"]) == len(run_c["results"])
+            == len(run_d["results"])), (
+        f"prompt count mismatch across runs: A={n_prompts} "
+        f"B={len(run_b['results'])} C={len(run_c['results'])} "
+        f"D={len(run_d['results'])}"
     )
 
     per_prompt = []
-    diverged = []
+    store_diverged = []  # A != B  (store path, both miss-side)
+    load_diverged = []   # C != D  (load path: Lethe-hit vs native-hit)
     for i in range(n_prompts):
         a = run_a["results"][i]["output_token_ids"]
         b = run_b["results"][i]["output_token_ids"]
         c = run_c["results"][i]["output_token_ids"]
+        d = run_d["results"][i]["output_token_ids"]
         ab_match = (a == b)
-        bc_match = (b == c)
-        ac_match = (a == c)
+        cd_match = (c == d)
         per_prompt.append({
             "prompt_index": i,
-            "n_tokens_a": len(a),
-            "n_tokens_b": len(b),
-            "n_tokens_c": len(c),
-            "A_eq_B": ab_match,
-            "B_eq_C": bc_match,
-            "A_eq_C": ac_match,
+            "store_AB_match": ab_match,     # miss-side: vanilla vs connector-cold
+            "load_CD_match": cd_match,      # hit-side: Lethe-warm vs native-warm
+            "AC_match_informational": (a == c),  # cross-boundary; may drift
             "first_diff_AB": (
                 next((j for j in range(min(len(a), len(b))) if a[j] != b[j]), None)
                 if not ab_match else None
             ),
-            "first_diff_BC": (
-                next((j for j in range(min(len(b), len(c))) if b[j] != c[j]), None)
-                if not bc_match else None
+            "first_diff_CD": (
+                next((j for j in range(min(len(c), len(d))) if c[j] != d[j]), None)
+                if not cd_match else None
             ),
         })
-        if not (ab_match and bc_match):
-            diverged.append(i)
+        if not ab_match:
+            store_diverged.append(i)
+        if not cd_match:
+            load_diverged.append(i)
 
     diagnostics["per_prompt"] = per_prompt
-    diagnostics["diverged_prompt_indices"] = diverged
-    diagnostics["all_identical"] = (len(diverged) == 0)
+    diagnostics["store_path_diverged_AB"] = store_diverged
+    diagnostics["load_path_diverged_CD"] = load_diverged
+    diagnostics["all_identical"] = (
+        len(store_diverged) == 0 and len(load_diverged) == 0
+    )
     diagnostics["test_ended_at"] = time.time()
     diagnostics["wall_seconds"] = (
         diagnostics["test_ended_at"] - diagnostics["test_started_at"]
     )
 
-    # Always dump diagnostics, pass or fail.
     RESULTS_PATH.write_text(json.dumps(diagnostics, indent=2))
     print(f"\nW1.4 diagnostics → {RESULTS_PATH}")
 
-    if diverged:
-        # Build a per-prompt summary for the failure message.
-        lines = ["Three-way control FAILED. Per-prompt:"]
+    if store_diverged or load_diverged:
+        lines = ["Token-identical control FAILED."]
+        if store_diverged:
+            lines.append(
+                f"  STORE path (vanilla==connector-cold) diverged on "
+                f"prompts {store_diverged} — connector corrupts the "
+                f"miss-side result. This is a real save-path bug.")
+        if load_diverged:
+            lines.append(
+                f"  LOAD path (Lethe-warm==native-warm) diverged on "
+                f"prompts {load_diverged} — KV served by Lethe differs "
+                f"from KV served by vLLM's native cache on the same "
+                f"hit schedule. This is a real load-path bug (rule-2 gate).")
         for entry in per_prompt:
             lines.append(
                 f"  prompt {entry['prompt_index']}: "
-                f"A_eq_B={entry['A_eq_B']} B_eq_C={entry['B_eq_C']} "
-                f"first_diff_AB={entry['first_diff_AB']} "
-                f"first_diff_BC={entry['first_diff_BC']}"
-            )
+                f"store_AB={entry['store_AB_match']} "
+                f"load_CD={entry['load_CD_match']} "
+                f"first_diff_CD={entry['first_diff_CD']}")
         lines.append(f"\nFull diagnostics: {RESULTS_PATH}")
         pytest.fail("\n".join(lines))
