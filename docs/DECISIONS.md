@@ -642,3 +642,145 @@ CLOCK.
 **Cross-references.** `cache_server/src/eviction.cpp::RunPassForTier`;
 `cache_server/include/lethe/eviction.hpp`; `tests/unit/test_eviction.cpp`.
 
+---
+
+## 2026-05-28 — W9 disaggregation is single-engine role-sequenced
+
+**Context.** W9 validates the disaggregated prefill/decode KV transport
+path. The W0 stubs (disagg/orchestrator.py + prefill_worker.py +
+decode_worker.py) sketched a physical two-HTTP-worker architecture. The
+dev box is a single 8 GB 4060 — two concurrent vLLM Gemma-3-1B engines
+don't fit with comfortable KV headroom.
+
+**Decision.** Use ONE vLLM engine driven in two role-sequenced phases:
+a prefill phase exports P's KV to Lethe, then a decode phase imports it
+and generates. The KV genuinely round-trips through Lethe between
+phases — that is the disaggregated transport being validated. Reshaped
+disagg/orchestrator.py into `RoleSequencedDisagg` and removed the
+two-worker HTTP stubs (naming a single engine "prefill_worker process"
+would be dishonest). Physical two-instance separation is deferred to
+W12 PACE (48-80 GB).
+
+**Alternatives considered.** Two engines on the 4060 with tiny
+gpu_memory_utilization each — rejected: KV headroom too small to run
+the 10-prompt set, and it would validate the same transport path at
+much higher operational cost. The transport itself (gRPC, multi-node)
+was already proven in W3-W4; W9's job is the prefill→decode handoff,
+which single-engine sequencing exercises faithfully.
+
+**Bullet framing.** "Validated disaggregated prefill/decode KV
+transport path through the cache (single-engine role-sequenced);
+physical worker separation deferred to multi-GPU PACE in W12."
+
+**Cross-references.** `disagg/orchestrator.py`;
+`tests/correctness/test_disagg_token_identical.py`; `docs/weekly/W9.md`.
+
+---
+
+## 2026-05-28 — Connector presence marker: the load path was a false green
+
+**Context.** W9's hit-count gate found that the connector's KV LOAD
+path had NEVER fired — not in W9, and not in W1.4. The scheduler-side
+`get_num_new_matched_tokens` probed Lethe with `BlockId(layer=0)` as a
+"presence probe," but `save_kv_layer` stored the real per-layer KV
+under `layer=_layer_id_for(layer_name)` (non-zero). The C++
+`BlockIdHash` keys on `layer`, so the layer=0 probe could never match
+the stored blocks → 0 external tokens → no loads → the decode phase
+silently recomputed the whole prefix. W1.4 passed anyway because all
+its runs were cache-MISS recomputes (deterministic → identical).
+
+**Decision (user-approved).** `save_kv_layer` writes a 1-byte presence
+marker per block at `layer=0` (`_PRESENCE_LAYER`) in addition to the
+real per-layer KV. The scheduler's layer=0 probe hits the marker;
+`start_load_kv` still fetches the real per-layer blocks (it already
+used the correct layer ids). The marker is never injected into the KV
+cache — it is purely a "is this prefix cached?" beacon. Idempotent
+across the model's layers (the server dedups by BlockId, so only the
+first layer's markers land). Real layer ids are sha256-derived and
+effectively never 0, so layer=0 is safely reserved.
+
+**Alternatives considered.**
+- Probe with a reconstructed real layer_id. Rejected: the scheduler
+  doesn't know the worker's exact layer_name strings, and
+  reconstructing them is brittle across vLLM versions / model archs.
+- Store all layers' KV under one layer-agnostic block. Rejected: a
+  large save-path restructure for no load-path benefit.
+- Change the server Lookup to match on content-hash-only. Rejected:
+  proto/server change, out of W9 scope, and breaks per-layer storage.
+
+**Rationale.** The probe needed presence detection that survives the
+layer-keyed store; a tiny dedicated marker is the minimal change that
+makes the scheduler↔worker keying agree without touching the proto,
+the server, or the load path's correct per-layer fetch.
+
+**Cross-references.** `client/lethe_client/vllm_hook.py`
+(`_PRESENCE_LAYER`, save_kv_layer marker, get_num_new_matched_tokens
+probe); `tests/correctness/w9_results.json` (pre-fix diagnostic:
+decode_hit_tokens=0 everywhere; post-fix: >0 for multi-block prompts).
+
+---
+
+## 2026-05-28 — Connector holds back the last block when the whole prompt is cached
+
+**Context.** Once the load path fired, a fully-cached prompt made
+`get_num_new_matched_tokens` report ALL of the prompt as external,
+leaving 0 tokens for vLLM to compute. The scheduler asserts
+`num_new_tokens > 0` (scheduler.py:681) — it needs ≥1 token to run a
+forward and produce the first decode token's logits — and the engine
+crashed.
+
+**Decision.** `get_num_new_matched_tokens` caps `hit_tokens` to leave
+at least one block uncomputed when the prompt is fully cached and
+block-aligned. This mirrors vLLM's own native prefix cache, which
+holds back the last block for the same reason. Block alignment is
+preserved.
+
+**Rationale.** Standard external-cache-connector requirement; one
+correct answer (leave ≥1 block). Only bites when num_prompt_tokens is
+an exact multiple of block_size AND every block hit — otherwise the
+trailing partial block is always computed and ≥1 token already remains.
+
+**Cross-references.** `client/lethe_client/vllm_hook.py::
+get_num_new_matched_tokens` (the cap); observed in w9_results.json
+(e.g. an 11-block prompt loads 10 blocks / 160 tokens, holding 1 back).
+
+---
+
+## 2026-05-28 — W1.4 token-identical reframed to a rule-2 native-cache control
+
+**Context.** The presence-marker fix made the connector's load path
+fire — which broke W1.4. Its old assertion (A==B==C, where C was the
+"warm connector" run) had been comparing a now-real Lethe cache HIT (C)
+against vanilla recompute (A), which crosses the cache-hit/cache-miss
+boundary. CLAUDE.md rule 2 explicitly excludes bit-identicality across
+that boundary (non-associative attention FP). W1.4 had passed only
+because loads never fired (false green: three miss-side recomputes).
+
+**Decision (user-approved).** Reframe W1.4 to the rule-2 comparison.
+Four runs: A vanilla (miss), B connector-cold (miss, stores), C
+connector-warm (Lethe HIT, loads), D native-warm (vLLM's own prefix
+cache HIT). Two gates:
+- STORE path: A == B (both miss-side; save must not corrupt).
+- LOAD path: C == D (Lethe-served KV == natively-cached KV on the SAME
+  hit schedule). This is the rule-2 gate.
+A == C is recorded informational-only (cross-boundary; expected FP
+drift — W9 observed 3/10 prompts drift there while C==D held on all 10).
+
+**Alternatives considered.**
+- Delegate the load-path check entirely to W9's
+  test_disagg_token_identical and weaken W1.4 to A==B only. Rejected:
+  CLAUDE.md calls W1.4 the load-bearing test; it should self-contain
+  both gates.
+- Revert the connector fix to keep W1.4 green. Rejected: that ships a
+  connector whose load path provably doesn't work — a false green is
+  worse than a reframed honest test.
+
+**Rationale.** The reframe makes W1.4 genuinely exercise the load path
+for the first time and aligns its correctness claim with rule 2's
+exact wording (same hit/miss schedule), rather than an accidental
+cross-boundary comparison that only passed while loads were dead.
+
+**Cross-references.** `tests/correctness/test_token_identical.py`
+(A/B/C/D + store/load gates); `tests/correctness/_run_vllm_for_w14.py`
+("native" mode); CLAUDE.md rule 2.
+
