@@ -53,6 +53,7 @@
 #include <utility>
 
 #include "lethe/kv_transport.hpp"
+#include "lethe/metrics.hpp"
 #include "lethe/routing.hpp"
 #include "lethe/tiered_store.hpp"
 #include "lethe/types.hpp"
@@ -129,11 +130,13 @@ ReplicatorPoolState* pool_for(const Replicator* r) {
 Replicator::Replicator(std::string local_node_id,
                        Router* router,
                        TieredStore* store,
-                       KvTransport* transport)
+                       KvTransport* transport,
+                       Metrics* metrics)
     : local_node_id_(std::move(local_node_id)),
       router_(router),
       store_(store),
-      transport_(transport) {
+      transport_(transport),
+      metrics_(metrics) {
   // store_ is stashed for W8's TriggerReReplication (scans the local
   // store for under-replicated blocks after a peer is declared dead).
   // The (void) cast satisfies clang's -Wunused-private-field without
@@ -187,6 +190,7 @@ Replicator::Replicator(std::string local_node_id,
         std::span<const std::byte> data(task.block.data.data(),
                                         task.block.data.size());
         bool ok = false;
+        const auto send_t0 = std::chrono::steady_clock::now();
         try {
           auto fut = transport_->Send(task.peer_id, task.block.id,
                                       StreamPurpose::ReplicationPush, data);
@@ -194,6 +198,12 @@ Replicator::Replicator(std::string local_node_id,
         } catch (...) {
           // Transport threw (shouldn't, but defensive). Treat as failure.
           ok = false;
+        }
+        if (ok && metrics_ != nullptr) {
+          // W10: record the bytes + latency of this block transfer.
+          metrics_->RecordStreamBytes(
+              task.block.data.size(),
+              std::chrono::steady_clock::now() - send_t0);
         }
         if (!ok) {
           const std::uint64_t fail_n =
@@ -430,6 +440,12 @@ void Replicator::TriggerReReplication(
   if (DebugRerepEnabled()) {
     std::fprintf(stderr, "[lethe %s] TriggerReReplication: scanned=%zu dispatched=%zu\n",
                  local_node_id_.c_str(), all.size(), dispatched);
+  }
+  // W10: the blocks we just dispatched were under-replicated (a peer
+  // holding them died). Surface the count as a gauge so the dashboard
+  // shows under-replication spikes during failover recovery.
+  if (metrics_ != nullptr) {
+    metrics_->RecordUnderReplicated(dispatched);
   }
 }
 

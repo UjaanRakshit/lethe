@@ -96,8 +96,13 @@ if(LETHE_ENABLE_RDMA)
 endif()
 
 if(LETHE_ENABLE_METRICS)
-  # find_package(prometheus-cpp CONFIG REQUIRED)
-  # target_link_libraries(lethe_server PRIVATE prometheus-cpp::pull)
+  # W10: metrics are a HAND-ROLLED Prometheus text exporter (metrics.cpp)
+  # — prometheus-cpp is not packaged for Ubuntu 22.04 and the families
+  # are simple counters/gauges/histograms over a single /metrics GET.
+  # No external dependency, no extra link libraries; the /metrics HTTP
+  # server uses raw POSIX sockets. See docs/DECISIONS.md (2026-05-28).
+  # The flag gates LetheCache's Metrics construction in cache.cpp; when
+  # OFF, Record* calls are null-safe no-ops.
   target_compile_definitions(lethe_server PRIVATE LETHE_ENABLE_METRICS=1)
 endif()
 

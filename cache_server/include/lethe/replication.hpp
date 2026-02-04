@@ -17,16 +17,19 @@ namespace lethe {
 class TieredStore;
 class Router;
 class KvTransport;
+class Metrics;
 
 class Replicator {
  public:
   // W5-6: transport may be null for tests / single-node bring-up that
   // don't exercise replication. When null, ReplicateOut returns an
   // empty list and FetchFromAny returns nullopt without any RPC.
+  // W10: metrics may be null (tests); Record* calls are guarded.
   Replicator(std::string local_node_id,
              Router* router,
              TieredStore* store,
-             KvTransport* transport);
+             KvTransport* transport,
+             Metrics* metrics = nullptr);
   ~Replicator();
 
   // Push a block to all replica successors. Called from Insert after the
@@ -60,6 +63,7 @@ class Replicator {
   Router* router_;            // not owned
   TieredStore* store_;        // not owned
   KvTransport* transport_;    // not owned; nullable for single-node tests
+  Metrics* metrics_;          // not owned; nullable
 };
 
 }  // namespace lethe

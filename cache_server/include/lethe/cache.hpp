@@ -157,6 +157,12 @@ class LetheCache {
   CacheConfig cfg_;
   std::unique_ptr<TieredStore> store_;
   std::unique_ptr<Router> router_;
+  // Metrics is a leaf that Replicator/Membership/Evictor record into
+  // from their worker/heartbeat/eviction threads. It MUST outlive all
+  // of them, so it is declared HERE (before transport_/replicator_/…)
+  // → destroyed AFTER them in reverse-declaration order. Its own dtor
+  // joins the /metrics HTTP thread, which only touches its own atomics.
+  std::unique_ptr<Metrics> metrics_;
   // Subsystem destruction order matters and is encoded by declaration
   // order (reverse-decl is destruction order):
   //   1. evictor_ destroyed first → its 3 tier threads join while
@@ -177,7 +183,6 @@ class LetheCache {
   std::unique_ptr<Replicator> replicator_;
   std::unique_ptr<Membership> membership_;
   std::unique_ptr<Evictor> evictor_;
-  std::unique_ptr<Metrics> metrics_;
 
   std::atomic<bool> running_{false};
 };

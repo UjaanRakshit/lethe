@@ -36,6 +36,8 @@
 #include "lethe/cache.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <iostream>
 #include <utility>
 
 // Every forward-declared subsystem in cache.hpp needs its complete
@@ -99,6 +101,22 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
                                                      KvTransport::OnReceiveFn{});
   transport_->Start();
 
+  // W10: Metrics is a leaf — everyone records, no one reads. Construct
+  // it before the subsystems that record into it (Replicator,
+  // Membership, Evictor). Its ctor spawns the /metrics HTTP thread on
+  // cfg_.metrics_port; bind failure is non-fatal (see metrics.cpp), so
+  // a shared-host multi-node test where ports collide still runs.
+  //
+  // Gated on LETHE_ENABLE_METRICS (CMake option, default ON). When OFF
+  // the flag is undefined, metrics_ stays null, and every Record* call
+  // is a no-op via its `if (metrics_)` guard — the hot path pays
+  // nothing. Unit tests link cache.cpp without the flag, so they also
+  // skip the HTTP server (test_metrics.cpp drives Metrics directly).
+#ifdef LETHE_ENABLE_METRICS
+  metrics_ = std::make_unique<Metrics>(
+      "0.0.0.0:" + std::to_string(cfg_.metrics_port), cfg_.node_id);
+#endif
+
   // W4: Replicator must exist BEFORE Membership (Membership holds a
   // pointer to it for W8's membership-change re-replication driving).
   // The transport's connection pool is populated here from the static
@@ -106,7 +124,8 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   // immediately (no warm-up RPC needed). EnsurePeerClient delegates to
   // transport_->Connect.
   replicator_ = std::make_unique<Replicator>(
-      cfg_.node_id, router_.get(), store_.get(), transport_.get());
+      cfg_.node_id, router_.get(), store_.get(), transport_.get(),
+      metrics_.get());
   for (const auto& p : cfg_.seed_peers) {
     if (p.node_id == cfg_.node_id) continue;
     replicator_->EnsurePeerClient(p.node_id, p.address);
@@ -122,7 +141,8 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
       cfg_.node_id,
       cfg_.seed_peers,
       router_.get(),
-      replicator_.get());
+      replicator_.get(),
+      metrics_.get());
 
   // W8: Evictor runs per-tier SIEVE scans and gossips evictions via
   // EvictBroadcast. Takes TieredStore + Membership for the alive-peer
@@ -132,7 +152,7 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   ecfg.high_watermark_pct = cfg_.eviction_high_watermark_pct;
   ecfg.low_watermark_pct = cfg_.eviction_low_watermark_pct;
   evictor_ = std::make_unique<Evictor>(
-      ecfg, store_.get(), membership_.get(), cfg_.node_id);
+      ecfg, store_.get(), membership_.get(), cfg_.node_id, metrics_.get());
 }
 
 LetheCache::~LetheCache() {
@@ -162,8 +182,9 @@ void LetheCache::Shutdown() {
 }
 
 LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
-                                const std::string& /*request_id*/,
-                                const std::string& /*requesting_node*/) {
+                                const std::string& request_id,
+                                const std::string& requesting_node) {
+  LatencyTimer timer;
   LookupResult result;
   result.entries.reserve(ids.size());
   for (const auto& id : ids) {
@@ -228,6 +249,28 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
     ++result.miss_count;
     result.entries.push_back(e);
   }
+
+  // W10: the load-bearing hit-rate metric (the W9-lesson one — a
+  // flat-zero lethe_requests_total{result="hit"} would have caught the
+  // dead load path the first time anyone looked at the dashboard).
+  // hit_count counts LocalHit + RemoteHit; miss_count the rest.
+  if (metrics_) {
+    metrics_->RecordLookup(result.hit_count, result.miss_count,
+                           timer.elapsed());
+  }
+  // Structured trace: one greppable JSON line per Lookup (routing
+  // summary). DEBUG per-block detail is deferred; this INFO summary is
+  // what the W3-W4 read-repair logging ask reduces to now that
+  // read-repair is off at the Lookup path.
+  std::cerr << "{\"evt\":\"lookup\",\"node\":\"" << cfg_.node_id
+            << "\",\"request_id\":\"" << request_id
+            << "\",\"requesting_node\":\"" << requesting_node
+            << "\",\"blocks\":" << ids.size()
+            << ",\"hits\":" << result.hit_count
+            << ",\"misses\":" << result.miss_count
+            << ",\"latency_ms\":"
+            << std::chrono::duration<double, std::milli>(timer.elapsed()).count()
+            << "}\n";
   return result;
 }
 
@@ -235,6 +278,7 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
                                  const std::string& /*request_id*/,
                                  const std::string& /*source_node*/,
                                  InsertOptions /*opts*/) {
+  LatencyTimer timer;
   // W4 async replication + W7 tier-aware insert: write locally first
   // (using blk.tier as the hint, defaulting to DRAM) → ACK → kick off
   // background ReplicateOut. opts.sync_replicate is still accepted but
@@ -275,6 +319,7 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
       }
     }
   }
+  if (metrics_) metrics_->RecordInsert(accepted, timer.elapsed());
   return accepted;
 }
 

@@ -27,6 +27,7 @@ namespace lethe {
 
 class Router;
 class Replicator;
+class Metrics;
 
 struct PeerInfo {
   std::string node_id;
@@ -81,7 +82,8 @@ class Membership {
              std::string local_node_id,
              std::vector<StaticPeer> seed_peers,
              Router* router,
-             Replicator* replicator);
+             Replicator* replicator,
+             Metrics* metrics = nullptr);  // W10; nullable for tests
   ~Membership();
 
   void Start();
@@ -148,6 +150,7 @@ class Membership {
   // -Wattributes "attribute ignored").
   Router* router_;
   Replicator* replicator_;
+  Metrics* metrics_;          // W10; not owned; nullable
 
   mutable std::mutex mu_;
   std::unordered_map<std::string, PeerInfo> peers_;

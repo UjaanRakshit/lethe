@@ -55,6 +55,7 @@
 #include "lethe.grpc.pb.h"
 #include "lethe.pb.h"
 #include "lethe/membership.hpp"
+#include "lethe/metrics.hpp"
 #include "lethe/tiered_store.hpp"
 #include "lethe/types.hpp"
 
@@ -134,11 +135,13 @@ EvictorState* impl_for(const Evictor* e) {
 Evictor::Evictor(EvictionConfig cfg,
                  TieredStore* store,
                  Membership* membership,
-                 std::string local_node_id)
+                 std::string local_node_id,
+                 Metrics* metrics)
     : cfg_(cfg),
       store_(store),
       membership_(membership),
-      local_node_id_(std::move(local_node_id)) {
+      local_node_id_(std::move(local_node_id)),
+      metrics_(metrics) {
   auto impl = std::make_unique<EvictorState>();
   auto& reg = registry();
   std::lock_guard<std::mutex> g(reg.mu);
@@ -203,6 +206,15 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
 
   const std::size_t cap = store_->capacity_bytes(tier);
   const std::size_t used = store_->used_bytes(tier);
+
+  // W10: emit tier usage every scan (BEFORE the watermark early-return)
+  // so the dashboard's lethe_tier_bytes gauge tracks usage continuously,
+  // not only when a tier is under eviction pressure. Piggybacks on the
+  // 500ms scan cadence per tier-thread rather than a dedicated emitter.
+  if (metrics_ != nullptr && cap > 0) {
+    metrics_->RecordTierUsage(tier, used, cap);
+  }
+
   if (cap == 0 || used == 0) return r;
 
   const std::size_t high = cap * cfg_.high_watermark_pct / 100;
@@ -277,6 +289,14 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
     ++steps;
   }
   r.bytes_freed = freed_local;
+
+  // W10: record the eviction pass (blocks evicted across this tier +
+  // bytes freed). lethe_eviction_blocks_total / _bytes_freed_total.
+  const std::size_t evicted_count =
+      r.hbm_evicted + r.dram_evicted + r.ssd_evicted;
+  if (metrics_ != nullptr && evicted_count > 0) {
+    metrics_->RecordEvictionPass(evicted_count, r.bytes_freed);
+  }
 
   // Broadcast in one batch RPC per peer.
   if (cfg_.broadcast_evictions && !evicted.empty()) {

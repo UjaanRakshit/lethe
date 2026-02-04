@@ -51,6 +51,7 @@
 
 #include "lethe.grpc.pb.h"
 #include "lethe.pb.h"
+#include "lethe/metrics.hpp"
 #include "lethe/replication.hpp"
 #include "lethe/routing.hpp"
 
@@ -108,11 +109,13 @@ Membership::Membership(MembershipConfig cfg,
                        std::string local_node_id,
                        std::vector<StaticPeer> seed_peers,
                        Router* router,
-                       Replicator* replicator)
+                       Replicator* replicator,
+                       Metrics* metrics)
     : cfg_(cfg),
       local_node_id_(std::move(local_node_id)),
       router_(router),
-      replicator_(replicator) {
+      replicator_(replicator),
+      metrics_(metrics) {
   auto& reg = registry();
   std::lock_guard<std::mutex> g(reg.mu);
   reg.impls.emplace(this, std::make_unique<MembershipImpl>());
@@ -309,6 +312,11 @@ void Membership::OnMembershipChange(
     const std::vector<std::string>& lost_peers) {
   // Bump epoch FIRST so any concurrent caller sees the new value.
   epoch_.fetch_add(1, std::memory_order_release);
+  // W10: surface the new epoch as a gauge (the dashboard's
+  // lethe_cluster_epoch panel — a jump signals a membership change).
+  if (metrics_ != nullptr) {
+    metrics_->RecordEpoch(epoch_.load(std::memory_order_relaxed));
+  }
 
   // Compute the new alive peer-id list under mu_, then drop the lock
   // before calling into Router (its own lock) and Replicator (its

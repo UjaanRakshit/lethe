@@ -32,6 +32,7 @@ namespace lethe {
 
 class TieredStore;
 class Membership;
+class Metrics;
 
 struct EvictionConfig {
   std::size_t high_watermark_pct = 90;  // begin eviction
@@ -45,7 +46,8 @@ class Evictor {
   Evictor(EvictionConfig cfg,
           TieredStore* store,
           Membership* membership,
-          std::string local_node_id);
+          std::string local_node_id,
+          Metrics* metrics = nullptr);  // W10; nullable for tests
   ~Evictor();
 
   Evictor(const Evictor&) = delete;
@@ -90,6 +92,7 @@ class Evictor {
   TieredStore* store_;        // not owned
   Membership* membership_;    // not owned
   std::string local_node_id_;
+  Metrics* metrics_;          // W10; not owned; nullable
 
   // Per-instance state (threads, hand pointers, peer stubs, peer-
   // eviction tracking) lives in a TU-local registry keyed by
