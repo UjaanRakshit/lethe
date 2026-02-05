@@ -359,4 +359,8 @@ void Metrics::RecordUnderReplicated(std::size_t count) {
                                      std::memory_order_relaxed);
 }
 
+std::string Metrics::scrape_for_testing() const {
+  return impl_->render();
+}
+
 }  // namespace lethe

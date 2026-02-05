@@ -303,6 +303,7 @@ int main(int argc, char** argv) {
 
   std::cout << "[lethe] node=" << cfg.node_id
             << " grpc=" << cfg.grpc_port
+            << " metrics=" << cfg.metrics_port
             << " dram=" << (cfg.dram_bytes >> 20) << "MiB"
             << " peers=" << cfg.seed_peers.size() << "\n";
   for (const auto& p : cfg.seed_peers) {

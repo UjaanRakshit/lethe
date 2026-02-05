@@ -36,6 +36,11 @@ class Metrics {
   void RecordFailoverRecovery(std::chrono::milliseconds duration);
   void RecordUnderReplicated(std::size_t count);
 
+  // Test-only seam: render the current Prometheus text exposition
+  // synchronously (the same bytes the /metrics HTTP handler serves).
+  // Lets test_metrics.cpp assert on the output without a socket.
+  std::string scrape_for_testing() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

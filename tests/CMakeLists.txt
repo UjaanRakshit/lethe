@@ -95,3 +95,4 @@ lethe_add_unit_test(test_membership   unit/test_membership.cpp)
 lethe_add_unit_test(test_routing      unit/test_routing.cpp)
 lethe_add_unit_test(test_tiered_store unit/test_tiered_store.cpp)  # W7
 lethe_add_unit_test(test_eviction     unit/test_eviction.cpp)      # W8
+lethe_add_unit_test(test_metrics      unit/test_metrics.cpp)       # W10
