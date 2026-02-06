@@ -11,11 +11,17 @@ x-lethe-base: &lethe-base
     - lethe-net
 
 services:
+  # NOTE: the ENTRYPOINT is already /usr/local/bin/lethe_server, so the
+  # `command` is ARGS ONLY — do NOT repeat ./lethe_server (the W0 file
+  # did, which made argv[1]=node_id="./lethe_server" and the port parse
+  # crash). Peers use main.cpp's --peers node@host:port,... format. Each
+  # container binds metrics on 9090 in its own netns (mapped to host
+  # 9091/2/3); prometheus.yml scrapes nodeN:9090 inside the lethe-net.
   lethe-node0:
     <<: *lethe-base
     container_name: lethe-node0
-    command: ["./lethe_server", "node0", "50051",
-              "lethe-node1:50051,lethe-node2:50051"]
+    command: ["node0", "50051",
+              "--peers", "node1@lethe-node1:50051,node2@lethe-node2:50051"]
     ports:
       - "50051:50051"
       - "9091:9090"
@@ -23,8 +29,8 @@ services:
   lethe-node1:
     <<: *lethe-base
     container_name: lethe-node1
-    command: ["./lethe_server", "node1", "50051",
-              "lethe-node0:50051,lethe-node2:50051"]
+    command: ["node1", "50051",
+              "--peers", "node0@lethe-node0:50051,node2@lethe-node2:50051"]
     ports:
       - "50061:50051"
       - "9092:9090"
@@ -32,8 +38,8 @@ services:
   lethe-node2:
     <<: *lethe-base
     container_name: lethe-node2
-    command: ["./lethe_server", "node2", "50051",
-              "lethe-node0:50051,lethe-node1:50051"]
+    command: ["node2", "50051",
+              "--peers", "node0@lethe-node0:50051,node1@lethe-node1:50051"]
     ports:
       - "50071:50051"
       - "9093:9090"

@@ -1,0 +1,12 @@
+# Keep the docker build context small: the image build does its own
+# clean cmake build from source, so host build trees and the multi-GB
+# vLLM venv must not be copied in.
+.git
+.venv-vllm
+build
+build-tsan
+build-rdma
+build-nometrics
+**/__pycache__
+*.pyc
+tests/correctness/w*_results.json
