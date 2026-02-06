@@ -3,7 +3,10 @@ version: "3.9"
 x-lethe-base: &lethe-base
   image: lethe:dev
   build:
-    context: .
+    # compose v2 resolves `context` relative to THIS file's directory
+    # (deploy/), so the build context is the repo root one level up.
+    # dockerfile is then relative to that context.
+    context: ..
     dockerfile: deploy/Dockerfile
   cap_add:
     - NET_ADMIN              # for chaos.partition / packet_loss
@@ -48,7 +51,8 @@ services:
     image: prom/prometheus:latest
     container_name: lethe-prometheus
     volumes:
-      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # paths are relative to THIS file's dir (deploy/), not the repo root.
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
     networks:
@@ -61,7 +65,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     volumes:
-      - ./deploy/grafana:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana:/etc/grafana/provisioning/dashboards:ro
     ports:
       - "3000:3000"
     networks:
