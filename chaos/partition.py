@@ -5,31 +5,67 @@ a split-brain scenario. Lethe should NOT proceed to elect a new owner
 (we don't run consensus); instead, both sides should mark each other
 suspected and resume normal operation when packets flow again.
 """
+
 from __future__ import annotations
-import argparse, subprocess, time
+import argparse
+import subprocess
+import time
 
 
 def partition(a: str, b: str):
     # Bidirectional drop between two container hostnames.
-    subprocess.check_call([
-        "docker", "exec", a, "iptables", "-A", "OUTPUT",
-        "-d", b, "-j", "DROP",
-    ])
-    subprocess.check_call([
-        "docker", "exec", b, "iptables", "-A", "OUTPUT",
-        "-d", a, "-j", "DROP",
-    ])
+    subprocess.check_call(
+        [
+            "docker",
+            "exec",
+            a,
+            "iptables",
+            "-A",
+            "OUTPUT",
+            "-d",
+            b,
+            "-j",
+            "DROP",
+        ]
+    )
+    subprocess.check_call(
+        [
+            "docker",
+            "exec",
+            b,
+            "iptables",
+            "-A",
+            "OUTPUT",
+            "-d",
+            a,
+            "-j",
+            "DROP",
+        ]
+    )
 
 
 def heal(a: str, b: str):
-    subprocess.check_call([
-        "docker", "exec", a, "iptables", "-D", "OUTPUT",
-        "-d", b, "-j", "DROP",
-    ])
-    subprocess.check_call([
-        "docker", "exec", b, "iptables", "-D", "OUTPUT",
-        "-d", a, "-j", "DROP",
-    ])
+    # Idempotent / best-effort: `iptables -D` exits non-zero if the rule is
+    # absent (already healed, or never injected). Deleting a missing rule is
+    # not an error for us, so swallow it — this lets invariants.py call heal()
+    # unconditionally in a finally / restore step.
+    for src, dst in ((a, b), (b, a)):
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                src,
+                "iptables",
+                "-D",
+                "OUTPUT",
+                "-d",
+                dst,
+                "-j",
+                "DROP",
+            ],
+            capture_output=True,
+            text=True,
+        )
 
 
 def main():

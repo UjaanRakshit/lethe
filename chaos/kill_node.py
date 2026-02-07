@@ -44,13 +44,28 @@ def revive(target: str, mode: str) -> None:
         subprocess.check_call(["docker", "start", target])
 
 
+def is_running(target: str) -> bool:
+    """True iff the container exists and is in the `running` state. A paused
+    container reports `paused`, a sigkilled/stopped one `exited` — both are
+    not-running for our purposes (the restore step start/unpauses them)."""
+    out = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", target],
+        capture_output=True,
+        text=True,
+    )
+    return out.returncode == 0 and out.stdout.strip() == "true"
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--target", required=True, help="docker container name")
-    p.add_argument("--mode", choices=["sigkill", "sigterm", "pause"],
-                   default="sigkill")
-    p.add_argument("--restart-after", type=float, default=0,
-                   help="seconds after kill to restart; 0 = leave dead")
+    p.add_argument("--mode", choices=["sigkill", "sigterm", "pause"], default="sigkill")
+    p.add_argument(
+        "--restart-after",
+        type=float,
+        default=0,
+        help="seconds after kill to restart; 0 = leave dead",
+    )
     args = p.parse_args()
 
     print(f"[chaos] killing {args.target} ({args.mode})")
@@ -59,7 +74,7 @@ def main():
     if args.restart_after > 0:
         time.sleep(args.restart_after)
         revive(args.target, args.mode)
-        print(f"[chaos] revived {args.target} after {time.monotonic()-t0:.1f}s")
+        print(f"[chaos] revived {args.target} after {time.monotonic() - t0:.1f}s")
 
 
 if __name__ == "__main__":
