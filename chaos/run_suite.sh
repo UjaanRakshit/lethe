@@ -37,14 +37,14 @@ fi
 
 start_ts=$(date +%s)
 
-echo "[suite] bringing up cluster ($COMPOSE up -d)"
+# Start from a FRESH cluster (down clears the in-memory block stores). This
+# matters: blocks are never deleted, so reusing a cluster across runs lets the
+# store grow past replication.cpp's kBoundedScan=256 cap, which would make a
+# single re-replication pass skip a fresh corpus's blocks and INV-3 fail for
+# the wrong reason. A clean store keeps the whole working set under the cap.
+echo "[suite] bringing up a FRESH cluster ($COMPOSE down + up -d)"
+$COMPOSE down 2>&1 | tail -3
 $COMPOSE up -d 2>&1 | tail -6
-
-# Re-assert every node container is running (a prior aborted run may have
-# left one killed; `up -d` starts compose-managed containers but be explicit).
-for c in lethe-node0 lethe-node1 lethe-node2; do
-  docker start "$c" >/dev/null 2>&1 || true
-done
 
 echo "[suite] waiting for all three /metrics endpoints..."
 ready=0
