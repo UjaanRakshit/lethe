@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import re
 import sys
 import time
@@ -57,6 +58,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from lethe_client.client import BlockId, LetheClient
+from lethe_client.routing import HashRing
 
 from chaos.kill_node import is_running, kill, revive
 from chaos.packet_loss import clear as netem_clear
@@ -168,9 +170,29 @@ class ClusterProbe:
             self._ring = None
 
     # -- workload ----------------------------------------------------------
-    def insert_corpus(self, corpus: dict[bytes, bytes], via: Node) -> int:
-        blocks = [(BlockId(hash=h), p) for h, p in corpus.items()]
-        return self.single(via).insert(blocks, request_id="w11-load")
+    def insert_corpus(self, corpus: dict[bytes, bytes]) -> int:
+        """Load the corpus ROUTED: each block is inserted at its ring-primary
+        so the server's ReplicateOut pushes it to the correct replica and the
+        block lands at the full R=2.
+
+        Inserting everything via one node (the W10 quick-load pattern) leaves
+        ~1/3 of blocks at R=1: for blocks where that node is the ring *replica*
+        rather than the primary, ReplicateOut pushes only to replicas-minus-self
+        and there is no other successor to push to. ReplicateOut itself flags
+        insert-to-non-primary as the 'by mistake' path. A chaos suite that
+        asserts 'no data loss on any single death' needs a genuine R=2 baseline,
+        so we route inserts to the primary (the system's intended usage) — this
+        is a load-pattern choice, not a change to routing/replication."""
+        ring = HashRing([n.node_id for n in self.topology])
+        groups: dict[str, list[tuple[BlockId, bytes]]] = {}
+        for h, p in corpus.items():
+            routed = ring.route(h, n_replicas=1)
+            primary = routed[0] if routed else self.topology[0].node_id
+            groups.setdefault(primary, []).append((BlockId(hash=h), p))
+        total = 0
+        for node_id, blocks in groups.items():
+            total += self.single(BY_ID[node_id]).insert(blocks, request_id="w11-load")
+        return total
 
     def probe_replicas(
         self, corpus: dict[bytes, bytes], alive: list[Node]
@@ -335,7 +357,7 @@ def scenario_kill(
     corpus = make_corpus(f"w11-{name}")
 
     # Baseline: load + reach R=2 across the full cluster.
-    probe.insert_corpus(corpus, via=coordinator)
+    probe.insert_corpus(corpus)
     _settle_replication(probe, corpus, TOPOLOGY, REPLICATION_FACTOR)
     base_epoch = probe.scrape_epoch(coordinator)
     base_hr = probe.ring_hit_rate(corpus)
@@ -507,7 +529,7 @@ def scenario_pause(probe: ClusterProbe) -> ScenarioResult:
     coordinator = survivors[0]
     corpus = make_corpus("w11-pause")
 
-    probe.insert_corpus(corpus, via=coordinator)
+    probe.insert_corpus(corpus)
     _settle_replication(probe, corpus, TOPOLOGY, REPLICATION_FACTOR)
     base_epoch = probe.scrape_epoch(coordinator)
 
@@ -586,9 +608,20 @@ def scenario_pause(probe: ClusterProbe) -> ScenarioResult:
 
 # --------------------------------------------------------------------------
 # Scenario: network partition (node1 <-X-> node2; node0 reaches both).
-# No-consensus design => the two sides drop each other from their rings
-# (divergent views are EXPECTED, not split-brain). The real assertions:
-# no data loss, no corruption, heal reconverges.
+#
+# Under the no-consensus design the two isolated sides each mark the other
+# dead and drop it from their ring — DIVERGENT VIEWS ARE EXPECTED, not a bug.
+# A bridged partition like this moves NO data (no inserts during it), so it
+# cannot lose redundancy or corrupt: writes are content-addressed, so even
+# divergent routing can never produce conflicting bytes for a BlockId. The
+# honest, falsifiable assertions are therefore:
+#   INV-1  no data loss (every block stays retrievable from the host),
+#   INV-6  no corruption,
+#   INV-3  membership RECOVERS — after heal both isolated sides detect the
+#          peer's return (a further epoch advance = resurrection), and the
+#          bridging node (node0) never churns its view.
+# "Reconverge to R=2" is NOT the right post-condition here: nothing dropped
+# below R=2 in the first place, so it would assert nothing.
 # --------------------------------------------------------------------------
 
 
@@ -598,67 +631,101 @@ def scenario_partition(probe: ClusterProbe) -> ScenarioResult:
     observer = BY_ID["node0"]  # reaches both sides throughout
     corpus = make_corpus("w11-partition")
 
-    probe.insert_corpus(corpus, via=observer)
+    probe.insert_corpus(corpus)
     _settle_replication(probe, corpus, TOPOLOGY, REPLICATION_FACTOR)
     base_epochs = {n.node_id: probe.scrape_epoch(n) for n in TOPOLOGY}
 
+    data_loss = False
+    corruption = False
+    # Peak epoch each isolated side reaches DURING the partition (captures the
+    # death-detection bump); rejoin must push past this after heal.
+    peak = {a.node_id: base_epochs[a.node_id], b.node_id: base_epochs[b.node_id]}
+    obs_churned = False
+
     partition_inject(a.container, b.container)
     try:
-        data_loss = False
-        corruption = False
         t0 = time.monotonic()
         while time.monotonic() - t0 < (DEAD_AFTER_MS + 1500) / 1000.0:
             st = probe.probe_replicas(corpus, TOPOLOGY)  # all host-reachable
             data_loss = data_loss or bool(st.lost)
             corruption = corruption or bool(st.corrupt)
+            for nid in (a.node_id, b.node_id):
+                ep = probe.scrape_epoch(BY_ID[nid])
+                if ep is not None and peak[nid] is not None and ep > peak[nid]:
+                    peak[nid] = ep
+            ep0 = probe.scrape_epoch(observer)
+            if (
+                ep0 is not None
+                and base_epochs[observer.node_id] is not None
+                and ep0 != base_epochs[observer.node_id]
+            ):
+                obs_churned = True
             time.sleep(0.3)
 
-        epochs_now = {n.node_id: probe.scrape_epoch(n) for n in TOPOLOGY}
         bumped = [
             nid
-            for nid in epochs_now
-            if epochs_now[nid] is not None
+            for nid in (a.node_id, b.node_id)
+            if peak[nid] is not None
             and base_epochs[nid] is not None
-            and epochs_now[nid] > base_epochs[nid]
+            and peak[nid] > base_epochs[nid]
         ]
         print(
-            f"  [partition] epochs bumped on {bumped or 'none'} "
+            f"  [partition] isolated sides that detected a death: {bumped or 'none'}; "
+            f"bridging node {observer.node_id} stable={not obs_churned} "
             "(divergent views EXPECTED under no-consensus)",
             flush=True,
-        )
-
-        res.add(
-            "INV-1",
-            not data_loss,
-            "no data loss during partition"
-            if not data_loss
-            else "BLOCK LOST during partition",
-        )
-        res.add(
-            "INV-6",
-            not corruption,
-            "no corruption during partition"
-            if not corruption
-            else "CORRUPTION during partition",
         )
     finally:
         partition_heal(a.container, b.container)
 
-    # Heal: the two sides must re-discover each other and reconverge.
-    reconverged = False
+    # Heal: each isolated side must re-discover the other (resurrection =>
+    # a further epoch advance past its during-partition peak).
+    rejoined = False
     h0 = time.monotonic()
     while time.monotonic() - h0 < 12:
         st = probe.probe_replicas(corpus, TOPOLOGY)
-        if st.min_holders >= REPLICATION_FACTOR and not st.lost and not st.corrupt:
-            reconverged = True
+        data_loss = data_loss or bool(st.lost)
+        corruption = corruption or bool(st.corrupt)
+        ea = probe.scrape_epoch(a)
+        eb = probe.scrape_epoch(b)
+        if (
+            ea is not None
+            and eb is not None
+            and peak[a.node_id] is not None
+            and peak[b.node_id] is not None
+            and ea > peak[a.node_id]
+            and eb > peak[b.node_id]
+        ):
+            rejoined = True
             break
         time.sleep(0.3)
+
+    res.add(
+        "INV-1",
+        not data_loss,
+        "no data loss through partition + heal"
+        if not data_loss
+        else "BLOCK LOST during partition",
+    )
+    res.add(
+        "INV-6",
+        not corruption,
+        "no corruption through partition + heal"
+        if not corruption
+        else "CORRUPTION during partition",
+    )
     res.add(
         "INV-3",
-        reconverged,
-        "cluster reconverged to R=2 after heal"
-        if reconverged
-        else "cluster did NOT reconverge after partition heal",
+        rejoined and not obs_churned,
+        f"both sides detected rejoin after heal "
+        f"(epochs {a.node_id}>{peak[a.node_id]}, {b.node_id}>{peak[b.node_id]}); "
+        f"bridge {observer.node_id} stable"
+        if rejoined and not obs_churned
+        else (
+            "bridging node churned its view (false partition)"
+            if obs_churned
+            else "isolated sides did NOT detect rejoin after heal"
+        ),
     )
     return res
 
@@ -678,14 +745,17 @@ def scenario_packet_loss(
     name = "packet_loss_heavy" if tolerate_death else "packet_loss"
     res = ScenarioResult(name)
     victim = BY_ID["node2"]
-    coordinator = BY_ID["node0"]
     corpus = make_corpus(f"w11-loss-{int(pct)}")
 
-    probe.insert_corpus(corpus, via=coordinator)
+    probe.insert_corpus(corpus)
     _settle_replication(probe, corpus, TOPOLOGY, REPLICATION_FACTOR)
     base_epochs = {n.node_id: probe.scrape_epoch(n) for n in TOPOLOGY}
 
-    netem_loss(victim.container, pct)
+    mech = netem_loss(victim.container, pct)
+    print(
+        f"  [{name}] injecting {pct:.0f}% loss on {victim.node_id} via {mech}",
+        flush=True,
+    )
     try:
         false_death = False
         corruption = False
@@ -777,6 +847,12 @@ def run_scenario(name: str) -> ScenarioResult:
 
 
 def main() -> None:
+    # The ring-free probe clients have no peer map, so a survivor's RemoteHit
+    # to another live node logs a "source_node unknown to client" warning per
+    # block. That's benign here (we read source_node directly off .hits), but
+    # it floods the suite output — quiet it to ERROR.
+    logging.getLogger("lethe_client.client").setLevel(logging.ERROR)
+
     ap = argparse.ArgumentParser(description="Lethe chaos invariant checker")
     ap.add_argument("--scenario", required=True, choices=list(SCENARIOS) + ["all"])
     args = ap.parse_args()
