@@ -37,6 +37,7 @@
 
 #include "lethe/replication.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -44,12 +45,10 @@
 #include <cstdlib>
 #include <deque>
 #include <future>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 #include "lethe/kv_transport.hpp"
@@ -65,6 +64,15 @@ namespace {
 constexpr std::size_t kReplicationQueueMax = 1024;
 constexpr int kReplicationWorkers = 4;
 constexpr int kFetchTimeoutMs = 500;
+
+// W11.1: re-replication is dispatched in bounded batches so a single
+// membership change doesn't enqueue an unbounded burst. The sweep thread
+// drains successive batches every kReReplicationSweepInterval until the
+// round's whole candidate set is covered — that's the Finding B fix
+// (previously one capped pass ran and nothing re-triggered, so working
+// sets > kReReplicationBatch stayed under-replicated indefinitely).
+constexpr std::size_t kReReplicationBatch = 256;
+constexpr auto kReReplicationSweepInterval = std::chrono::milliseconds(250);
 
 // Diagnostic gate; set LETHE_DEBUG_REREP=1 in the environment to get
 // stderr prints from TriggerReReplication and the worker loop.
@@ -91,7 +99,7 @@ struct ReplicateTask {
 }  // namespace
 
 struct ReplicatorPoolState {
-  std::mutex mu;
+  std::mutex mu;  // guards the worker queue (queue/cv)
   std::condition_variable cv;
   std::deque<ReplicateTask> queue;
   std::vector<std::thread> workers;
@@ -99,6 +107,19 @@ struct ReplicatorPoolState {
   std::atomic<std::uint64_t> overflow_drops{0};
   std::atomic<std::uint64_t> replicate_attempts{0};
   std::atomic<std::uint64_t> replicate_failures{0};
+
+  // W11.1 — periodic re-replication sweep. `rerep_mu` guards the round
+  // state. A round is the full set of in-route blocks this node holds at
+  // the time of a membership change; the sweep thread drains it in
+  // kReReplicationBatch-sized, queue-back-pressured chunks (advancing the
+  // cursor only for blocks actually enqueued) until the cursor reaches the
+  // end. lock order is ALWAYS rerep_mu -> mu (queue); workers take only mu.
+  std::mutex rerep_mu;
+  std::vector<BlockId> rerep_round;
+  std::size_t rerep_cursor = 0;
+  bool rerep_active = false;
+  std::chrono::steady_clock::time_point rerep_start;
+  std::thread sweep_thread;
 };
 
 namespace {
@@ -215,11 +236,40 @@ Replicator::Replicator(std::string local_node_id,
                          task.peer_id.c_str());
           }
           // Per CLAUDE.md rule 2: never block scheduling on cache
-          // liveness. Drop on the floor; W8 re-replication heals.
+          // liveness. Drop on the floor; the periodic sweep below
+          // re-pushes it on the next round / membership change.
         }
       }
     });
   }
+
+  // W11.1 — re-replication sweep thread. Drives DrainReReplication on a
+  // fixed cadence so a re-replication round larger than one batch fully
+  // drains across successive ticks (Finding B fix). This is the "next
+  // eviction-loop tick" the W8 TriggerReReplication comment promised —
+  // realized here as a dedicated low-frequency Replicator-owned timer
+  // rather than wiring the Evictor: it keeps re-replication self-contained
+  // (no Evictor->Replicator dependency), and its lifetime is trivially
+  // correct (joined in ~Replicator, while store_/router_/transport_ — all
+  // declared before replicator_ in cache.hpp — are still alive). It is a
+  // no-op (one mutex acquire + bool check) whenever no round is active.
+  raw->sweep_thread = std::thread([this, raw]() {
+    using namespace std::chrono_literals;
+    while (raw->running.load(std::memory_order_acquire)) {
+      // Sleep in short slices so Shutdown isn't blocked for a full
+      // interval (mirrors the Evictor's per-tier sleep pattern).
+      const auto wake = std::chrono::steady_clock::now() +
+                        kReReplicationSweepInterval;
+      while (std::chrono::steady_clock::now() < wake &&
+             raw->running.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::min<std::chrono::milliseconds>(
+            50ms, std::chrono::duration_cast<std::chrono::milliseconds>(
+                      wake - std::chrono::steady_clock::now())));
+      }
+      if (!raw->running.load(std::memory_order_acquire)) break;
+      DrainReReplication();
+    }
+  });
 }
 
 Replicator::~Replicator() {
@@ -233,6 +283,9 @@ Replicator::~Replicator() {
   for (auto& w : state->workers) {
     if (w.joinable()) w.join();
   }
+  // W11.1: stop the re-replication sweep before the pool is torn down.
+  // `running` is already false above; the sweep checks it each 50ms slice.
+  if (state->sweep_thread.joinable()) state->sweep_thread.join();
   auto& reg = pool_registry();
   std::lock_guard<std::mutex> g(reg.mu);
   reg.pools.erase(this);
@@ -325,23 +378,25 @@ std::optional<KvBlock> Replicator::FetchFromAny(
 
 void Replicator::TriggerReReplication(
     const std::vector<std::string>& lost_peers) {
-  // W8 implementation: scan local blocks across all tiers. For each
-  // block whose CURRENT routing (post-membership-change; Membership
-  // called Router::SetPeers before calling us) places us in the
-  // replica set AND any of the route's peers was just lost, we push
-  // the block bytes to the current replicas via ReplicateOut.
+  // Called by Membership::OnMembershipChange after a peer is declared
+  // dead (and after Router::SetPeers has installed the new ring). We
+  // build the FULL candidate set — every block this node holds and is
+  // in-route for under the new ring — and hand it to the sweep as a
+  // "re-replication round." DrainReReplication then dispatches it in
+  // bounded, queue-back-pressured batches across successive sweep ticks
+  // until the cursor reaches the end.
   //
-  // The Insert RPC is idempotent on BlockId (same hash → same bytes),
-  // so re-pushing to a peer that already has the block is a no-op
-  // at the receiver. That makes this safe to run on every surviving
-  // node — duplicates wash out, but no block goes under-replicated
-  // because all surviving copies attempt the re-push.
+  // W11.1 (Finding B fix): the W8 version dispatched at most kBoundedScan
+  // (256) blocks in ONE pass and nothing ever re-triggered — its comment
+  // claimed the remainder was "picked up on the next eviction-loop tick,"
+  // but the Evictor never called back, so a working set > 256 blocks per
+  // node stayed under-replicated forever under a single permanent death.
+  // The round + sweep makes that comment true: every candidate is covered.
   //
-  // Bounded: at most kBoundedScan blocks per call. If the local store
-  // has more than that affected by the change, the remaining blocks
-  // are picked up on the next eviction-loop tick OR on the next
-  // membership change. Re-replication completeness is W11 chaos
-  // surface; W8 covers the happy path.
+  // Idempotent: the receiver's Insert dedups on BlockId, so re-pushing a
+  // block a peer already has is a no-op — safe to over-include (we don't
+  // know which blocks a surviving peer is missing without an ACK channel;
+  // see the deferred-optimization note in docs/DECISIONS.md).
   if (router_ == nullptr || transport_ == nullptr || store_ == nullptr) {
     if (DebugRerepEnabled()) {
       std::fprintf(stderr, "[lethe %s] TriggerReReplication: nullptr dep; skipping\n",
@@ -357,56 +412,70 @@ void Replicator::TriggerReReplication(
     return;
   }
 
-  constexpr std::size_t kBoundedScan = 256;
-  std::unordered_set<std::string> lost_set(lost_peers.begin(),
-                                           lost_peers.end());
-  if (DebugRerepEnabled()) {
-    std::fprintf(stderr, "[lethe %s] TriggerReReplication: lost=%zu\n",
-                 local_node_id_.c_str(), lost_peers.size());
-  }
-
-  // Collect candidates across all tiers. Snapshot calls are
-  // shared-locked on each BlockStore; the bytes load below uses
-  // TieredStore::Get which copies out an owned vector per the W7
-  // contract.
-  std::vector<BlockMeta> all;
+  // Scan ALL tiers (no cap — covering the whole working set is the point)
+  // and collect the IDs of blocks we hold and are in-route for. Snapshot
+  // is shared-locked per BlockStore; we only read IDs here, the byte copy
+  // happens lazily in DrainReReplication via TieredStore::Get.
+  std::vector<BlockId> candidates;
   for (Tier t : {Tier::HBM, Tier::DRAM, Tier::SSD}) {
-    auto snap = store_->Snapshot(t);
-    all.insert(all.end(), std::make_move_iterator(snap.begin()),
-               std::make_move_iterator(snap.end()));
-    if (all.size() >= kBoundedScan * 4) break;  // soft cap on scan cost
+    for (auto& meta : store_->Snapshot(t)) {
+      const auto route = router_->Route(meta.id);
+      bool in_route = (route.primary == local_node_id_);
+      if (!in_route) {
+        for (const auto& r : route.replicas) {
+          if (r == local_node_id_) { in_route = true; break; }
+        }
+      }
+      if (in_route) candidates.push_back(meta.id);
+    }
   }
 
-  std::size_t dispatched = 0;
-  for (const auto& meta : all) {
-    if (dispatched >= kBoundedScan) break;
+  auto* state = pool_for(this);
+  if (state == nullptr) return;
+  std::size_t round_size = 0;
+  {
+    std::lock_guard<std::mutex> g(state->rerep_mu);
+    state->rerep_round = std::move(candidates);
+    state->rerep_cursor = 0;
+    state->rerep_active = !state->rerep_round.empty();
+    state->rerep_start = std::chrono::steady_clock::now();
+    round_size = state->rerep_round.size();
+  }
+  if (DebugRerepEnabled()) {
+    std::fprintf(stderr, "[lethe %s] TriggerReReplication: round=%zu (lost=%zu)\n",
+                 local_node_id_.c_str(), round_size, lost_peers.size());
+  }
+  // Live deficit gauge (W10 metric fix — was previously set to the
+  // dispatched count and never reset; now it is the count still pending
+  // and DrainReReplication zeroes it on completion).
+  if (metrics_ != nullptr) {
+    metrics_->RecordUnderReplicated(round_size);
+  }
+  // Kick the first batch inline so recovery doesn't wait a sweep tick.
+  // (rerep_mu is released above, so this re-acquire is safe.)
+  DrainReReplication();
+}
 
-    const auto route = router_->Route(meta.id);
-    // Are we in the route at all? Primary OR replica of the NEW ring.
-    bool we_in_route = (route.primary == local_node_id_);
-    if (!we_in_route) {
-      for (const auto& r : route.replicas) {
-        if (r == local_node_id_) { we_in_route = true; break; }
-      }
-    }
-    if (!we_in_route) continue;
+void Replicator::DrainReReplication() {
+  auto* state = pool_for(this);
+  if (state == nullptr || router_ == nullptr || transport_ == nullptr ||
+      store_ == nullptr) {
+    return;
+  }
 
-    // Heuristic: any block we currently hold AND are in the route for
-    // is a candidate — re-push it. Cheap to over-include (Insert dedup
-    // makes redundant pushes no-ops); expensive to under-include and
-    // leave a block under-replicated.
-    (void)lost_set;  // not consulted: we don't have the OLD ring here,
-                     // and "we hold it + we're in the new route" is a
-                     // sufficient candidate condition.
+  std::lock_guard<std::mutex> g(state->rerep_mu);
+  if (!state->rerep_active) return;  // no-op when idle (the common case)
 
-    // Build the FULL target set: every route member (primary AND
-    // replicas) EXCEPT self. This is the key difference from
-    // ReplicateOut, which only pushes to replicas — that's correct
-    // for the primary-initiated Insert path, but WRONG for re-
-    // replication. After a death, a surviving REPLICA may be the only
-    // node holding a block whose NEW primary doesn't have it; if we
-    // only pushed to replicas (excluding the primary), that primary
-    // would never converge. Push to everyone in the route but us.
+  std::size_t dispatched_this_tick = 0;
+  while (dispatched_this_tick < kReReplicationBatch &&
+         state->rerep_cursor < state->rerep_round.size()) {
+    const BlockId id = state->rerep_round[state->rerep_cursor];
+    const auto route = router_->Route(id);
+
+    // FULL target set = every route member except self (same rule W8
+    // established: a surviving replica may be the only holder of a block
+    // whose new primary lacks it, so pushing only to replicas would never
+    // converge the primary).
     std::vector<std::string> targets;
     if (!route.primary.empty() && route.primary != local_node_id_) {
       targets.push_back(route.primary);
@@ -414,38 +483,63 @@ void Replicator::TriggerReReplication(
     for (const auto& r : route.replicas) {
       if (r != local_node_id_) targets.push_back(r);
     }
-    if (targets.empty()) continue;
+    if (targets.empty()) {  // nothing to push for this block; it's covered
+      ++state->rerep_cursor;
+      continue;
+    }
 
-    // Fetch the bytes locally and enqueue a push to each target.
-    auto got = store_->Get(meta.id);
-    if (!got.has_value()) continue;
+    // Back-pressure: advance the cursor ONLY for blocks we can fully
+    // enqueue. If the worker queue lacks room for all of this block's
+    // pushes, stop this tick and retry from the SAME cursor next tick —
+    // this throttles the sweep to the worker drain rate and guarantees no
+    // overflow-drop silently skips a block.
+    {
+      std::lock_guard<std::mutex> qg(state->mu);
+      if (state->queue.size() + targets.size() > kReplicationQueueMax) break;
+    }
+
+    auto got = store_->Get(id);
+    if (!got.has_value()) {  // evicted since the round was built; skip
+      ++state->rerep_cursor;
+      continue;
+    }
     KvBlock blk;
-    blk.id = meta.id;
+    blk.id = id;
     blk.data = std::move(got->data);
     blk.tier = got->tier_found;
-
-    auto* state = pool_for(this);
-    if (state == nullptr) break;
-    for (const auto& peer_id : targets) {
-      std::lock_guard<std::mutex> lock(state->mu);
-      if (state->queue.size() >= kReplicationQueueMax) {
-        state->overflow_drops.fetch_add(1, std::memory_order_relaxed);
-        continue;
+    {
+      std::lock_guard<std::mutex> qg(state->mu);
+      for (const auto& peer_id : targets) {
+        state->queue.push_back(ReplicateTask{peer_id, blk});
+        state->cv.notify_one();
       }
-      state->queue.push_back(ReplicateTask{peer_id, blk});
-      state->cv.notify_one();
     }
-    ++dispatched;
+    ++state->rerep_cursor;
+    ++dispatched_this_tick;
   }
-  if (DebugRerepEnabled()) {
-    std::fprintf(stderr, "[lethe %s] TriggerReReplication: scanned=%zu dispatched=%zu\n",
-                 local_node_id_.c_str(), all.size(), dispatched);
-  }
-  // W10: the blocks we just dispatched were under-replicated (a peer
-  // holding them died). Surface the count as a gauge so the dashboard
-  // shows under-replication spikes during failover recovery.
-  if (metrics_ != nullptr) {
-    metrics_->RecordUnderReplicated(dispatched);
+
+  const std::size_t remaining =
+      state->rerep_round.size() - state->rerep_cursor;
+  if (state->rerep_cursor >= state->rerep_round.size()) {
+    // Round complete — every candidate dispatched. Zero the deficit gauge
+    // and record the dispatch-completion time (W10 metric fix: this is the
+    // first call site for lethe_failover_recovery_seconds; it measures
+    // detection→full-dispatch, the locally-observable recovery signal —
+    // ACK-confirmed R=2 lags by the queue drain, which the chaos suite
+    // measures behaviorally).
+    state->rerep_active = false;
+    if (metrics_ != nullptr) {
+      metrics_->RecordUnderReplicated(0);
+      metrics_->RecordFailoverRecovery(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - state->rerep_start));
+    }
+    if (DebugRerepEnabled()) {
+      std::fprintf(stderr, "[lethe %s] DrainReReplication: round complete\n",
+                   local_node_id_.c_str());
+    }
+  } else if (metrics_ != nullptr) {
+    metrics_->RecordUnderReplicated(remaining);
   }
 }
 

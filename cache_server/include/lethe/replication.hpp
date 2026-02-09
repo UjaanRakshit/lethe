@@ -59,6 +59,14 @@ class Replicator {
   void DropPeerClient(const std::string& peer_id);
 
  private:
+  // W11.1: dispatch the next bounded batch of the in-progress
+  // re-replication round (populated by TriggerReReplication). Driven on a
+  // cadence by an internal sweep thread so a working set larger than one
+  // batch fully reconverges across successive ticks — Finding B fix. Also
+  // called once inline by TriggerReReplication for a fast first batch.
+  // No-op when no round is active.
+  void DrainReReplication();
+
   std::string local_node_id_;
   Router* router_;            // not owned
   TieredStore* store_;        // not owned
