@@ -99,21 +99,39 @@ REPLICATION_FACTOR = 2
 HEARTBEAT_MS = 200
 DEAD_AFTER_MS = 3000
 DETECTION_BUDGET_MS = 4200  # epoch must bump within this of the kill
-RECOVERY_TARGET_MS = 3500  # documented 3.5s end-to-end (WARN if missed)
-# Observed re-replication drains in ~6-8s on a fresh cluster (the documented
-# 500ms slice is optimistic — see docs/weekly/W11.md). The HARD ceiling is the
-# "did it converge AT ALL" line; missing the 3.5s target is a WARN, not a fail.
-RECOVERY_HARD_MS = 12000  # beyond this => genuine non-convergence => REAL BUG
+
+# Recovery budget, RESTATED honestly in W11.1 (see docs/weekly/W11_1.md and
+# docs/DESIGN.md). The W0 spine's "3s detect + 500ms re-replicate = 3.5s" was
+# only ever true at tiny working sets — re-replication time scales ~linearly
+# with the working set (the push queue drains at a measured rate). Detection
+# is ~3s regardless; re-replication adds the measured per-size cost. INV-3
+# asserts full reconvergence within the size-appropriate budget below and
+# FAILS only on genuine non-convergence.
+RECOVERY_DETECT_MS = 3000              # dead_after, size-independent
+# Per-block re-replication cost (measured, W11.1 curve) + a fixed slack. Used
+# to size the budget for a given corpus: budget = detect + N * per_block + slack.
+RECOVERY_PER_BLOCK_MS = 40             # ~25 blocks/s drain (docker bridge)
+RECOVERY_SLACK_MS = 4000
+
+
+def recovery_budget_ms(n_blocks: int) -> float:
+    """Honest, size-aware recovery budget: detection + measured drain + slack."""
+    return RECOVERY_DETECT_MS + n_blocks * RECOVERY_PER_BLOCK_MS + RECOVERY_SLACK_MS
+
+
 INV4_SETTLE_MS = DEAD_AFTER_MS + 1200  # after this, no stale RemoteHit
 
-# kBoundedScan in replication.cpp: a single re-replication pass dispatches at
-# most this many blocks. Working sets larger than this per node will NOT fully
-# re-replicate from a SINGLE death (the rest wait for another membership
-# change), so the suite keeps the corpus well under it and starts from a fresh
-# cluster. See docs/weekly/W11.md "Finding B".
+# kBoundedScan in replication.cpp: re-replication dispatches at most this many
+# blocks PER sweep tick. Before W11.1 a single pass ran and nothing
+# re-triggered, so working sets > this stayed under-replicated forever
+# (Finding B). W11.1 wired a periodic sweep that drains successive batches
+# until the whole round is covered — completeness now holds at any size; the
+# cap only bounds per-tick work. The LARGE scenario below deliberately exceeds
+# it to prove the fix.
 REPLICATION_SCAN_CAP = 256
 
 CORPUS_SIZE = 48
+LARGE_CORPUS_SIZE = 600  # > REPLICATION_SCAN_CAP: the Finding B regression test
 PAYLOAD_LEN = 256
 
 
@@ -249,15 +267,31 @@ class ClusterProbe:
         r = self.single(survivor).lookup(ids, request_id="w11-stale")
         return sum(1 for hit in r.hits if hit.source_node == dead_id)
 
-    def scrape_epoch(self, node: Node) -> Optional[int]:
+    def _scrape_gauge(self, node: Node, metric: str) -> Optional[int]:
         url = f"http://{node.metrics_addr}/metrics"
         try:
             with urllib.request.urlopen(url, timeout=2.0) as resp:
                 text = resp.read().decode("utf-8", "replace")
         except (urllib.error.URLError, OSError):
             return None
-        m = re.search(r"^lethe_cluster_epoch\{[^}]*\}\s+(-?\d+)", text, re.MULTILINE)
+        m = re.search(rf"^{metric}\{{[^}}]*\}}\s+(-?\d+)", text, re.MULTILINE)
         return int(m.group(1)) if m else None
+
+    def scrape_epoch(self, node: Node) -> Optional[int]:
+        return self._scrape_gauge(node, "lethe_cluster_epoch")
+
+    def scrape_under_target(self, node: Node) -> Optional[int]:
+        # W11.1: now a LIVE deficit (round.size - cursor), zeroed on
+        # reconvergence — usable as a cheap convergence signal.
+        return self._scrape_gauge(node, "lethe_replicas_under_target")
+
+    def sample_probe(self, corpus: dict[bytes, bytes], alive: list[Node],
+                     k: int = 50) -> ReplicaState:
+        """probe_replicas over an evenly-spaced k-sample of the corpus —
+        cheap enough to poll convergence at large N without N*nodes fetches."""
+        items = list(corpus.items())
+        step = max(1, len(items) // k)
+        return self.probe_replicas(dict(items[::step]), alive)
 
 
 # --------------------------------------------------------------------------
@@ -387,7 +421,8 @@ def scenario_kill(
     last_residual = len(corpus)  # blocks below the replication target
     samples = 0
 
-    deadline = t0 + (RECOVERY_HARD_MS / 1000.0) + 1.0
+    budget_ms = recovery_budget_ms(len(corpus))
+    deadline = t0 + (budget_ms / 1000.0) + 2.0
     while time.monotonic() < deadline:
         now_ms = (time.monotonic() - t0) * 1000.0
 
@@ -450,26 +485,23 @@ def scenario_kill(
             f"epoch advanced at t+{detect_ms:.0f}ms (budget {DETECTION_BUDGET_MS}ms)",
         )
 
-    # INV-3: re-replication converged to R=2 across survivors.
+    # INV-3: re-replication converged to R=2 across survivors within the
+    # size-aware honest budget (W11.1). A miss is a real regression now (the
+    # budget is measured, not cosmetic), so it FAILS and reports the residual.
     if recovery_ms is None:
         res.add(
             "INV-3",
             False,
-            f"did NOT reconverge to R={target} within {RECOVERY_HARD_MS}ms — "
+            f"did NOT reconverge to R={target} within {budget_ms:.0f}ms — "
             f"{last_residual}/{len(corpus)} block(s) still at R<{target} "
-            "(non-convergence; check the kBoundedScan=256 cap if the store is "
-            "large)",
+            "(non-convergence)",
         )
     else:
-        within_hard = recovery_ms <= RECOVERY_HARD_MS
-        over_target = recovery_ms > RECOVERY_TARGET_MS
         res.add(
             "INV-3",
-            within_hard,
+            recovery_ms <= budget_ms,
             f"reconverged to R={target} at t+{recovery_ms:.0f}ms "
-            f"(target {RECOVERY_TARGET_MS}ms, hard {RECOVERY_HARD_MS}ms)"
-            + ("; OVER 3.5s target" if over_target and within_hard else ""),
-            warn=over_target and within_hard,
+            f"(budget {budget_ms:.0f}ms for {len(corpus)} blocks)",
         )
 
     # INV-5: load path never zeroed.
@@ -831,6 +863,88 @@ def scenario_packet_loss(
 
 
 # --------------------------------------------------------------------------
+# Scenario: LARGE working set (> kBoundedScan=256). This is the W11.1
+# Finding-B regression test: before the periodic-sweep fix, a single death
+# left the blocks beyond the 256-per-pass cap at R=1 forever. It must fully
+# reconverge to R=2 now. Recovery is polled cheaply via the now-live
+# replicas_under_target gauge + a sampled probe, then confirmed with a full
+# probe; the budget is size-aware (recovery scales with the working set).
+# --------------------------------------------------------------------------
+
+
+def scenario_large(probe: ClusterProbe) -> ScenarioResult:
+    res = ScenarioResult("large")
+    victim = BY_ID["node2"]
+    survivors = [n for n in TOPOLOGY if n is not victim]
+    n = LARGE_CORPUS_SIZE
+    corpus = make_corpus("w11_1-large", n)
+
+    probe.insert_corpus(corpus)
+    # Settle to R=2 on a sample (full settle would be N*nodes fetches).
+    t_settle = time.monotonic()
+    while time.monotonic() - t_settle < 20:
+        if probe.sample_probe(corpus, TOPOLOGY).min_holders >= REPLICATION_FACTOR:
+            break
+        time.sleep(0.5)
+    base = probe.sample_probe(corpus, TOPOLOGY)
+    print(
+        f"  [large] {n} blocks (> {REPLICATION_SCAN_CAP} cap), "
+        f"baseline sample_min={base.min_holders}",
+        flush=True,
+    )
+
+    budget_ms = recovery_budget_ms(n)
+    target = min(REPLICATION_FACTOR, len(survivors))
+    t0 = time.monotonic()
+    kill(victim.container, "sigkill")
+
+    recovery_ms: Optional[float] = None
+    corruption = False
+    deadline = t0 + budget_ms / 1000.0 + 5.0
+    while time.monotonic() < deadline:
+        smp = probe.sample_probe(corpus, survivors)
+        if smp.corrupt:
+            corruption = True
+        if smp.min_holders >= target:
+            # Sample looks converged — confirm against the FULL corpus.
+            full = probe.probe_replicas(corpus, survivors)
+            if full.corrupt:
+                corruption = True
+            if full.min_holders >= target and not full.lost:
+                recovery_ms = (time.monotonic() - t0) * 1000.0
+                break
+        time.sleep(0.5)
+
+    full = probe.probe_replicas(corpus, survivors)
+    residual = sum(1 for hs in full.holders.values() if len(hs) < target)
+
+    # INV-1 / INV-6: safety holds throughout.
+    res.add(
+        "INV-1",
+        not full.lost,
+        f"no data loss ({n} blocks, all on >=1 survivor)"
+        if not full.lost
+        else f"{len(full.lost)} block(s) LOST",
+    )
+    res.add(
+        "INV-6",
+        not corruption,
+        "no corruption" if not corruption else "CORRUPTION on large set",
+    )
+    # INV-3: the Finding-B claim — FULL reconvergence beyond the 256 cap.
+    res.add(
+        "INV-3",
+        recovery_ms is not None and recovery_ms <= budget_ms and residual == 0,
+        f"all {n} blocks back to R={target} at t+{recovery_ms:.0f}ms "
+        f"(budget {budget_ms:.0f}ms)"
+        if recovery_ms is not None and residual == 0
+        else f"INCOMPLETE: {residual}/{n} still at R<{target} after "
+        f"{budget_ms:.0f}ms (Finding B would fail here pre-W11.1)",
+    )
+    return res
+
+
+# --------------------------------------------------------------------------
 # CLI.
 # --------------------------------------------------------------------------
 
@@ -840,6 +954,7 @@ SCENARIOS = {
     "pause": scenario_pause,
     "partition": scenario_partition,
     "packet_loss": scenario_packet_loss,
+    "large": scenario_large,
     "packet_loss_heavy": lambda p: scenario_packet_loss(
         p, pct=30.0, tolerate_death=True
     ),

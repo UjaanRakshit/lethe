@@ -24,7 +24,7 @@ cd "$ROOT"
 
 COMPOSE="docker compose -f deploy/docker-compose.yml"
 VENV="${LETHE_VENV:-$ROOT/.venv-vllm}"
-SCENARIOS=(sigkill restart pause partition packet_loss)
+SCENARIOS=(sigkill restart pause partition packet_loss large)
 SUITE_BUDGET_S=300
 KEEP_UP="${KEEP_UP:-1}"     # 1 = leave the stack up for inspection
 
@@ -37,32 +37,28 @@ fi
 
 start_ts=$(date +%s)
 
-# Start from a FRESH cluster (down clears the in-memory block stores). This
-# matters: blocks are never deleted, so reusing a cluster across runs lets the
-# store grow past replication.cpp's kBoundedScan=256 cap, which would make a
-# single re-replication pass skip a fresh corpus's blocks and INV-3 fail for
-# the wrong reason. A clean store keeps the whole working set under the cap.
-echo "[suite] bringing up a FRESH cluster ($COMPOSE down + up -d)"
-$COMPOSE down 2>&1 | tail -3
-$COMPOSE up -d 2>&1 | tail -6
-
-echo "[suite] waiting for all three /metrics endpoints..."
-ready=0
-for _ in $(seq 1 60); do
-  ok=1
-  for p in 9091 9092 9093; do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$p/metrics" 2>/dev/null)
-    [[ "$code" == "200" ]] || ok=0
+# Each scenario starts from a FRESH cluster (down clears the in-memory block
+# stores). Blocks are never deleted, so a reused store accumulates across
+# scenarios; because re-replication re-pushes EVERY in-route block a node
+# holds (idempotent over-push — it can't know which a peer is missing without
+# ACKs), a polluted store would inflate each scenario's recovery time and make
+# the size-aware INV-3 budget unfair. A clean store per scenario keeps recovery
+# proportional to that scenario's own corpus. (W11.1: the kBoundedScan=256 cap
+# no longer breaks completeness, so the LARGE scenario deliberately exceeds it.)
+fresh_cluster() {
+  $COMPOSE down >/dev/null 2>&1
+  $COMPOSE up -d >/dev/null 2>&1
+  for _ in $(seq 1 60); do
+    ok=1
+    for p in 9091 9092 9093; do
+      code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$p/metrics" 2>/dev/null)
+      [[ "$code" == "200" ]] || ok=0
+    done
+    [[ $ok -eq 1 ]] && return 0
+    sleep 0.5
   done
-  if [[ $ok -eq 1 ]]; then ready=1; break; fi
-  sleep 0.5
-done
-if [[ $ready -ne 1 ]]; then
-  echo "[suite] ERROR: cluster did not become ready in time" >&2
-  $COMPOSE ps
-  exit 2
-fi
-echo "[suite] cluster ready."
+  return 1
+}
 
 declare -a FAILED
 overall=0
@@ -77,9 +73,14 @@ for s in "${SCENARIOS[@]}"; do
 
   echo
   echo "######## scenario: $s (t+${elapsed}s) ########"
-  # Each scenario is its own process: fresh clients, and invariants.py runs
-  # its own restore() in a finally so the next scenario starts from 3 healthy
-  # nodes even if this one aborts.
+  if ! fresh_cluster; then
+    echo "[suite] ERROR: cluster did not become ready for '$s'" >&2
+    FAILED+=("$s:SETUP")
+    overall=1
+    continue
+  fi
+  # Each scenario is its own process + fresh cluster; invariants.py also runs
+  # its own restore() in a finally so a mid-scenario abort still cleans up.
   out="$(python -m chaos.invariants --scenario "$s" 2>&1)"
   rc=$?
   echo "$out"
