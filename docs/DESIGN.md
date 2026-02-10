@@ -18,10 +18,18 @@ exposed in open-source form.
 
 1. Maintain high cache hit rate when the working set exceeds a single
    node's KV memory.
-2. Survive single-node failure with ≤3.5s end-to-end recovery
-   (~3s detection via the heartbeat detector + ~500ms re-replication),
-   under R=2 replication. Earlier drafts said "<500ms" — that ignored
-   the detection floor and is wrong; see CLAUDE.md "Architecture spine."
+2. Survive single-node failure under R=2 with **sub-3s detection
+   (`dead_after`) + full R=2 reconvergence that is bounded ~constant in
+   working-set size**. W11.1 measured reconvergence at ~13–22s across
+   200–2000 blocks on the docker bridge — roughly flat, because
+   re-replication throughput scales with load (~15 blk/s at N=200 up to
+   ~131 blk/s at N=2000). It does NOT degrade at scale. Earlier drafts
+   claimed "<500ms" (detection-only) and then "≤3.5s end-to-end"
+   (3s detect + 500ms re-replicate); BOTH are retired — the 500ms
+   re-replication slice was only ever true at tiny N. See
+   docs/weekly/W11_1.md for the measured curve and CLAUDE.md
+   "Architecture spine." Re-replication completeness holds at any working
+   set as of W11.1 (the periodic sweep covers sets past the per-pass cap).
 3. Integrate with vLLM as a drop-in KV transfer connector. The
    correctness claim is *cache-equivalence*, not bit-equivalence: given
    the same set of cache hits vs. misses, Lethe + vLLM produces the same
@@ -135,7 +143,7 @@ pointer is null), regardless of build mode.
 
 | Failure | Detection | Recovery |
 | --- | --- | --- |
-| Single node crash | Heartbeat timeout (3s) | Router rebuilds, replicator restores R=2 on alive peers (~500ms after declaration; ~3.5s end-to-end) |
+| Single node crash | Heartbeat timeout (3s) | Router rebuilds; replicator restores full R=2 on alive peers via a periodic re-replication sweep (W11.1). Measured ~13–22s end-to-end, ~flat across 200–2000 blocks (docker bridge); completeness holds at any working-set size |
 | Network partition (3-node) | Both sides suspect each other | No new replicas accepted on minority side; clients retry on healed |
 | Disk full on SSD tier | Insert fails with rejected | Caller falls back to DRAM-only or recompute |
 | Slow node (long GC) | Heartbeat suspected, then dead | Same as crash |

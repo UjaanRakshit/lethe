@@ -36,13 +36,27 @@ shard. Show the crossover empirically.
 - Hit rate at 2× single-node WSS: 45–65% Lethe vs. 15–25% native.
 - TTFT improvement at that regime: 1.6–2.2×.
 - Throughput at saturation: comparable per node; Lethe wins on aggregate.
-- Recovery time, R=2, single-node kill, end-to-end:
-  ~3.5s = ~3s detection (`dead_after`) + ~500ms re-replication.
-  Earlier drafts of this file claimed "300–500ms"; that number was
-  detection-only and ignored the heartbeat detector floor. The chaos
-  suite is allowed to tighten `dead_after` for failover micro-benchmarks
-  — clearly label those runs "aggressive detector" so the headline
-  recovery number stays the conservative-defaults one.
+- Recovery time, R=2, single-node kill, end-to-end (RESTATED W11.1 against
+  a measured curve — docker bridge, fresh cluster, full R=2 reconvergence):
+
+  | working set | recovery | residual | rate |
+  | ----------- | -------- | -------- | ---- |
+  | 200 blocks  | 13.4s    | 0        | ~15 blk/s  |
+  | 500 blocks  | 21.8s    | 0        | ~23 blk/s  |
+  | 1000 blocks | 22.0s    | 0        | ~45 blk/s  |
+  | 2000 blocks | 15.3s    | 0        | ~131 blk/s |
+
+  = ~3s detection (`dead_after`) + a re-replication drain that is **roughly
+  FLAT (~10–19s) across 200–2000 blocks** — throughput scales with load, so
+  recovery does NOT grow with working-set size. Earlier drafts claimed
+  "300–500ms" (detection-only) and then "~3.5s = 3s + 500ms re-replicate";
+  BOTH retired — the 500ms slice was only true at tiny N. Loopback (the
+  W7-W8 `test_failover_recovery` at N=200) is faster than this docker-bridge
+  curve. The chaos suite may tighten `dead_after` for detection micro-
+  benchmarks — label those "aggressive detector" so the headline number
+  stays the conservative-defaults one. Deferred re-replication speedups
+  (scope-to-dead-peer, suppress the ingest cascade, batch the push path) are
+  the levers if this needs to come down — see docs/DECISIONS.md (W11.1).
 - Routing overhead (Lookup p99): <5ms.
 
 DO NOT chase Mooncake's published numbers (it claims up to 5x TTFT improvement

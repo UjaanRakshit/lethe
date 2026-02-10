@@ -100,23 +100,34 @@ HEARTBEAT_MS = 200
 DEAD_AFTER_MS = 3000
 DETECTION_BUDGET_MS = 4200  # epoch must bump within this of the kill
 
-# Recovery budget, RESTATED honestly in W11.1 (see docs/weekly/W11_1.md and
-# docs/DESIGN.md). The W0 spine's "3s detect + 500ms re-replicate = 3.5s" was
-# only ever true at tiny working sets — re-replication time scales ~linearly
-# with the working set (the push queue drains at a measured rate). Detection
-# is ~3s regardless; re-replication adds the measured per-size cost. INV-3
-# asserts full reconvergence within the size-appropriate budget below and
-# FAILS only on genuine non-convergence.
+# Recovery budget, RESTATED honestly in W11.1 (see docs/weekly/W11_1.md,
+# docs/DESIGN.md, docs/BENCHMARKS.md). The W0 spine's "3s detect + 500ms
+# re-replicate = 3.5s" was only ever true at tiny working sets. The W11.1
+# curve (docker bridge, fresh cluster, full R=2 reconvergence) measured:
+#   200 blk -> 13.4s   500 -> 21.8s   1000 -> 22.0s   2000 -> 15.3s
+# i.e. recovery is ~13-22s and ROUGHLY FLAT across 200-2000 (re-replication
+# throughput scales with load: ~15 blk/s at N=200 up to ~131 blk/s at
+# N=2000), so it does NOT degrade at scale. Detection is ~3s regardless.
+# We therefore model the budget as detection + a flat drain envelope + slack,
+# with a tiny per-block hedge for sizes beyond the measured range. INV-3
+# asserts full reconvergence within this budget and FAILS only on genuine
+# non-convergence (residual > 0) — passing against measured reality.
 RECOVERY_DETECT_MS = 3000              # dead_after, size-independent
-# Per-block re-replication cost (measured, W11.1 curve) + a fixed slack. Used
-# to size the budget for a given corpus: budget = detect + N * per_block + slack.
-RECOVERY_PER_BLOCK_MS = 40             # ~25 blocks/s drain (docker bridge)
-RECOVERY_SLACK_MS = 4000
+RECOVERY_DRAIN_ENVELOPE_MS = 22000     # observed max drain (N<=2000), flat
+RECOVERY_PER_BLOCK_MS = 2              # hedge for N beyond the measured range
+RECOVERY_SLACK_MS = 6000
 
 
 def recovery_budget_ms(n_blocks: int) -> float:
-    """Honest, size-aware recovery budget: detection + measured drain + slack."""
-    return RECOVERY_DETECT_MS + n_blocks * RECOVERY_PER_BLOCK_MS + RECOVERY_SLACK_MS
+    """Honest recovery budget: detection + flat drain envelope + slack (+ a
+    small per-block hedge). Recovery is empirically ~flat in N, so the budget
+    is too — the N term only guards working sets past the measured range."""
+    return (
+        RECOVERY_DETECT_MS
+        + RECOVERY_DRAIN_ENVELOPE_MS
+        + n_blocks * RECOVERY_PER_BLOCK_MS
+        + RECOVERY_SLACK_MS
+    )
 
 
 INV4_SETTLE_MS = DEAD_AFTER_MS + 1200  # after this, no stale RemoteHit

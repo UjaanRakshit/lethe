@@ -993,3 +993,126 @@ or a structurally-invalid hard comparison.
 (store hard, load informational); W9's
 `tests/correctness/test_disagg_token_identical.py`; CLAUDE.md rule 2.
 
+---
+
+## 2026-05-28 — W11.1: wire the re-replication re-trigger (Finding B fix)
+
+**Context.** W11's chaos suite surfaced Finding B: `TriggerReReplication`
+dispatched at most `kBoundedScan=256` blocks in a single pass and nothing
+re-triggered — its comment claimed the remainder was "picked up on the next
+eviction-loop tick," but `eviction.cpp` never called back. So a working set
+> 256 blocks per node stayed under-replicated forever under a single
+permanent death. Latent since W8 (the W8 failover test used 200 blocks,
+under the bound). W11.1 is explicitly authorized to change replication +
+eviction to fix it — but narrowly: make the comment true.
+
+**Decision — a Replicator-owned periodic sweep, not an Evictor callback.**
+`TriggerReReplication` now builds the FULL candidate set (all in-route
+blocks the node holds under the new ring, no cap) as a "re-replication
+round." A dedicated low-frequency thread owned by the Replicator
+(`kReReplicationSweepInterval = 250ms`) calls `DrainReReplication`, which
+dispatches the round in `kReReplicationBatch = 256`-sized, **queue-back-
+pressured** chunks — advancing the cursor only for blocks it could fully
+enqueue — across successive ticks until the cursor reaches the end.
+`TriggerReReplication` kicks the first batch inline so recovery doesn't wait
+a tick.
+
+**Why a Replicator-owned timer over wiring the Evictor (the comment's
+literal "eviction-loop tick").** The brief offered "one of the per-tier
+evictor threads, or a dedicated low-frequency timer." I chose the dedicated
+timer, owned by the Replicator, because:
+- **Cohesion:** re-replication is a Replicator concern; no new
+  `Evictor → Replicator` dependency edge (the architecture spine keeps
+  `Evictor → TieredStore + Membership`).
+- **Lifetime safety:** the sweep thread is joined in `~Replicator`, and
+  `store_`/`router_`/`transport_`/`metrics_` are all declared *before*
+  `replicator_` in `cache.hpp`, so they outlive it. The membership thread
+  (the other `TriggerReReplication` caller) is destroyed *before*
+  `replicator_`, so no concurrent populate during teardown.
+- **Smaller race surface:** the sweep + worker pool are both Replicator-
+  internal, sharing one already-understood lock discipline
+  (`rerep_mu → mu(queue)`; workers take only `mu`). TSan-clean on the
+  active concurrent path (400 routed blocks, kill, 25s drain).
+
+**Back-pressure (no overflow-drop).** The drain advances the cursor only
+for blocks whose pushes all fit in the worker queue's remaining room; if
+the queue is full it stops the tick and retries the same cursor next tick.
+This throttles the sweep to the worker drain rate so no push is silently
+dropped on overflow (which would re-strand a block at R=1).
+
+**Idempotent over-push (and the deferred optimization).** Re-replication
+re-pushes EVERY in-route block the node holds, not just the under-replicated
+ones — it cannot know which a surviving peer is missing without an ACK
+channel, and the receiver's `Insert` dedups on `BlockId` so a redundant push
+is a no-op. Correct, but it inflates recovery (~2× the necessary pushes) and
+the receiver's `Insert` handler itself re-`ReplicateOut`s (a further
+cascade). **Deferred optimizations** (NOT done in W11.1 — each is more than a
+one-liner and touches replication semantics): (a) scope the round to blocks
+the *dead* peer actually owned by reconstructing the old ring from
+`lost_peers`; (b) suppress the `Insert`-triggered `ReplicateOut` for
+replication-push ingests; (c) batch/parallelize the synchronous unary push
+path. These are the levers if the measured recovery (below) needs to come
+down for W12.
+
+**Result.** A 600-block working set (> the 256 cap) now fully reconverges to
+R=2 after a single permanent death (0/600 residual) — pre-W11.1 it left
+~340 blocks at R=1 forever.
+
+**Cross-references.** `cache_server/src/replication.cpp`
+(`TriggerReReplication`, `DrainReReplication`, `kReReplicationBatch`,
+`kReReplicationSweepInterval`, `ReplicatorPoolState::sweep_thread`);
+`cache_server/include/lethe/replication.hpp`; `chaos/invariants.py`
+(`scenario_large`).
+
+---
+
+## 2026-05-28 — W11.1: restate the recovery budget; fix two W10 metric holes
+
+**Context.** W11 Finding A: the W0 spine's "3s detect + 500ms re-replicate =
+3.5s" was only ever true at tiny working sets. With completeness fixed
+(above), recovery time is dominated by the push-queue drain, which scales
+with the working set.
+
+**Measured curve (docker bridge, fresh cluster, kill → full R=2 across the
+two survivors; 0 residual at every size — completeness holds):**
+
+| working set | recovery | effective rate |
+| ----------- | -------- | -------------- |
+| 200 blocks  | 13.4s    | ~15 blk/s      |
+| 500 blocks  | 21.8s    | ~23 blk/s      |
+| 1000 blocks | 22.0s    | ~45 blk/s      |
+| 2000 blocks | 15.3s    | ~131 blk/s     |
+
+The surprise: recovery is **roughly FLAT (~13–22s), not linear** in N — 2000
+blocks reconverged *faster* than 1000 (noise) and the effective drain rate
+*climbs* with N (15 → 131 blk/s) as a large fixed cost (~13s of round latency
++ queue drain beyond the ~3s detection) is amortized over more blocks. So
+recovery does **not** degrade at scale (no O(n²)); it is bounded ~constant,
+just much slower than the retired 3.5s claim.
+
+**Decision — flat-envelope budget, not linear.** Because recovery is
+empirically flat in N, `recovery_budget_ms(N)` is `detection (~3s) + a flat
+drain envelope (~22s, the observed max) + slack`, with only a tiny per-block
+hedge for sizes past the measured range. DESIGN.md / BENCHMARKS.md restated
+to: *"sub-3s detection; full R=2 reconvergence in ~15–22s, roughly
+independent of working-set size (200–2000), because re-replication throughput
+scales with load."* INV-3 now PASSES against this honest, measured budget and
+FAILS only on genuine non-convergence (residual > 0) — not a cosmetic
+threshold. The flat 3.5s claim is retired everywhere it appeared.
+
+**W10 metric holes fixed (carry-over).** Both were surfaced by W11:
+- `lethe_replicas_under_target` was set to the *dispatched count* of the last
+  membership change and never reset. It is now the LIVE pending deficit
+  (`round.size − cursor`), zeroed by `DrainReReplication` on completion — a
+  usable convergence signal (the chaos `large` scenario polls it).
+- `lethe_failover_recovery_seconds` was declared with no call site (always
+  empty). It now gets its first observation at round dispatch-completion
+  (detection → full-dispatch). Note this measures *dispatch*-complete, not
+  ACK-confirmed R=2 (which lags by the queue drain and the chaos suite
+  measures behaviorally); documented at the call site.
+
+**Cross-references.** `chaos/invariants.py` (`recovery_budget_ms`,
+`RECOVERY_PER_BLOCK_MS`); `cache_server/src/replication.cpp`
+(`RecordUnderReplicated`, `RecordFailoverRecovery` call sites);
+`docs/DESIGN.md`, `docs/BENCHMARKS.md`.
+
