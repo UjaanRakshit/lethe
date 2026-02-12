@@ -301,6 +301,16 @@ int main(int argc, char** argv) {
   cfg.ssd_bytes = 256ULL << 20;  // 256 MiB
   cfg.ssd_path = std::string("/tmp/lethe-") + cfg.node_id + "/ssd";
 
+  // Benchmark knob: the W12 crossover sweep sizes the working set well past
+  // the laptop defaults, so let the harness raise the tier budgets without a
+  // recompile. Bytes, base-10. Unset/zero/garbage -> keep the defaults above.
+  if (const char* d = std::getenv("LETHE_DRAM_BYTES")) {
+    if (std::uint64_t v = std::strtoull(d, nullptr, 10)) cfg.dram_bytes = v;
+  }
+  if (const char* s = std::getenv("LETHE_SSD_BYTES")) {
+    if (std::uint64_t v = std::strtoull(s, nullptr, 10)) cfg.ssd_bytes = v;
+  }
+
   std::cout << "[lethe] node=" << cfg.node_id
             << " grpc=" << cfg.grpc_port
             << " metrics=" << cfg.metrics_port
