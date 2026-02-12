@@ -49,10 +49,41 @@ distributed infra from current papers.
 Risk: W5–6 (RDMA). If SoftRoCE starts eating more than 2.5 weeks, fall back to
 gRPC-over-TCP for the data path. The rest of the project stands.
 
+## Results (measured)
+
+Measured on PACE (Georgia Tech) ICE, one NVIDIA L40S per job, `gemma-3-1b-it`,
+vLLM 0.19.1, median of 3 runs. Baseline is vLLM with its **native prefix cache
+ON** (not disabled), working set swept past a single node's KV budget. Full
+methodology and caveats in [docs/weekly/W12.md](docs/weekly/W12.md).
+
+**Capacity crossover** — prefix-cache hit rate vs. working-set size:
+
+| working set | 1 node (native cache) | Lethe (3 nodes, R=2) |
+| ----------- | --------------------- | -------------------- |
+| 1× node KV budget | 98.8% | 98.8% |
+| 2× budget   | **0.0%** (collapses) | **98.8%** (sustains) |
+| 4× budget   | **0.0%** | **85.2%** |
+
+Lethe holds 2–4× the working set at a sustained hit rate, serving tens of
+thousands of KV blocks from the distributed tier.
+
+**Honest caveat:** at 1B-model scale this capacity win does **not** translate
+to lower TTFT — recomputing a short prefill on a 1B model (~23 ms) is cheaper
+than a loopback KV fetch (~53–81 ms). The latency benefit of a KV cache
+appears only when per-token recompute cost exceeds fetch cost (larger model
+and/or RDMA), which was out of reach this window. We measured 1B and report 1B.
+
+**Failure recovery** — node kill → full R=2 reconvergence (loopback, median
+of 3): 3.7 s @ 200 blocks → 12.0 s @ 2000 blocks; ~3 s detection floor
+(`dead_after`) + a re-replication drain that scales with working set. (On the
+docker bridge the fixed per-RPC latency dominates: 13–22 s, roughly flat.)
+
 ## Build
 
 ```bash
-# Cache server (C++20, requires gRPC, protobuf, libibverbs, prometheus-cpp)
+# Cache server (C++20). Default build needs only gRPC + protobuf (BLAKE3 is
+# vendored). libibverbs is pulled in only with -DLETHE_ENABLE_RDMA=ON;
+# Prometheus exposition is hand-rolled, so prometheus-cpp is NOT a dependency.
 cmake -B build -S .
 cmake --build build -j
 
@@ -75,7 +106,7 @@ lethe/
 ├── cache_server/       C++20 cache server (the spine of W1–W8, W10)
 ├── client/             Python client + vLLM PagedAttention hook
 ├── disagg/             Disaggregated prefill/decode orchestrator (W9)
-├── benchmarks/         ShareGPT/BurstGPT trace replay harness (W4, W12)
+├── benchmarks/         Crossover + recovery harnesses, plots (W12)
 ├── chaos/              Fault injection harness (W11)
 ├── tests/              Correctness, integration, unit
 ├── deploy/             docker-compose, Prometheus, Grafana (W10)

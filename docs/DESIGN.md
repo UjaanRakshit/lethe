@@ -17,7 +17,11 @@ exposed in open-source form.
 ## Goals
 
 1. Maintain high cache hit rate when the working set exceeds a single
-   node's KV memory.
+   node's KV memory. W12 measured this (gemma-3-1b, L40S, median of 3):
+   single-node native prefix caching collapses 98.8% → 0% once WSS crosses
+   the node's KV budget, while Lethe sustains 98.8% at 2× and 85.2% at 4×.
+   The win is capacity, not latency — at 1B scale recompute is cheaper than
+   a network fetch, so TTFT does not improve; see docs/weekly/W12.md.
 2. Survive single-node failure under R=2 with **sub-3s detection
    (`dead_after`) + full R=2 reconvergence that is bounded ~constant in
    working-set size**. W11.1 measured reconvergence at ~13–22s across

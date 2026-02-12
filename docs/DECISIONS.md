@@ -1116,3 +1116,69 @@ threshold. The flat 3.5s claim is retired everywhere it appeared.
 (`RecordUnderReplicated`, `RecordFailoverRecovery` call sites);
 `docs/DESIGN.md`, `docs/BENCHMARKS.md`.
 
+
+## 2026-05-29 — W12: how the crossover sweep is constructed (and why)
+
+**Context.** The headline W12 claim is the capacity crossover: a distributed
+prefix cache sustains hit rate when the working set exceeds a single node's
+KV budget, where vLLM's native single-node prefix cache collapses. Getting a
+*trustworthy* measurement of that took ruling out two ways to get a
+plausible-but-wrong number.
+
+**Decision 1 — budget set by `gpu_memory_utilization`, NOT
+`num_gpu_blocks_override`.** The obvious way to pin an identical, small GPU
+KV budget for configs A and B is `num_gpu_blocks_override`. It is a trap:
+under vLLM 0.19.1 it survives *consecutive-identical* prefix reuse (a naive
+two-request probe shows `num_cached>0`, looks fine) but **silently breaks
+prefix reuse under an interleaved access pattern** — config A dropped to 0%
+hit rate even *below* budget, which would have manufactured a fake crossover.
+Verified by isolating the override in a probe vs. the interleaved sweep. We
+instead set the budget with `gpu_memory_utilization` (same value for A and
+B), which keeps native caching working as a real baseline. Side note: the
+no-override `cache_config.num_gpu_blocks` reading is unreliable (reported
+37 192 / 168 115 — nonsense), so we report WSS in tokens/prefixes, not in a
+block count we don't trust.
+
+**Decision 2 — synthetic prefixes, not ShareGPT, for *this* claim.** A cache
+hit depends on whether the working set fits the cache, not on token content.
+Synthetic random prefixes give exact control of WSS as a multiple of the
+single-node budget and isolate the capacity effect; ShareGPT's natural
+prefix-sharing (shared system prompts, multi-turn reuse) inflates hit rate
+independently and would confound the crossover. ShareGPT is the more
+*realistic* workload and is a worthwhile follow-up for credibility, but it is
+the wrong instrument for the capacity claim specifically. Flagged deferred,
+not silently dropped.
+
+**Decision 3 — `LETHE_DRAM_BYTES` / `LETHE_SSD_BYTES` env knobs.** The sweep
+sizes the working set to several times one node's KV budget; the laptop-sized
+tier defaults (1 GiB DRAM) overflow at high WSS, so Lethe evicted its own
+overflow and config B's hit rate fell to 0.12 at 4× before the fix. The knobs
+let the harness raise tier budgets without a recompile; default builds are
+unchanged. This is a benchmark config knob, not a design change (R=2, routing,
+eviction logic untouched).
+
+**Cross-references.** `cache_server/src/main.cpp` (the env knobs);
+`benchmarks/crossover_sweep.py`; `docs/weekly/W12.md`.
+
+## 2026-05-29 — W12: the capacity win does not convert to a latency win at 1B scale
+
+**Context.** Measured crossover: native single-node hit rate 0.988 → 0.0 once
+WSS exceeds the node's KV budget; Lethe sustains 0.988 at 2× and 0.852 at 4×.
+But TTFT did **not** follow: native is flat ~23 ms even at 0% hit, Lethe is
+53–81 ms.
+
+**Decision — report it straight, do not bury it.** On a 1B model, recomputing
+a 256-token prefill is cheaper than a network KV fetch, so a cache *hit*
+served over loopback gRPC is slower than a *miss* recomputed on-GPU. The KV
+cache's latency value is `recompute_cost − fetch_cost`, which is negative at
+1B + loopback and turns positive only when per-token recompute FLOPs dominate
+the fetch — i.e. a larger model (8B+) and/or RDMA. We could not run those in
+the window (Llama gating + the gemma multimodal connector KV-layout limit
+force 1B; RDMA is SoftRoCE, not real IB). So the honest headline is a
+**capacity** result, not a latency result: Lethe holds 2–4× the working set
+at a sustained hit rate, at a per-request latency cost at this scale. The
+alternative — quietly switching to "vLLM with prefix cache OFF" so Lethe
+"wins" on TTFT — is exactly the dishonest baseline CLAUDE.md rule 1 forbids.
+
+**Cross-references.** `docs/weekly/W12.md` (results + caveat);
+`docs/BENCHMARKS.md` (measured numbers replace the earlier estimates).

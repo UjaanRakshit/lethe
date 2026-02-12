@@ -31,13 +31,42 @@ shard. Show the crossover empirically.
 - BurstGPT (secondary; tests behavior under traffic spikes).
 - Synthetic prefix workload (smoke test only).
 
-## What numbers I expect (no promises until measured)
+## Measured numbers (W12)
 
-- Hit rate at 2× single-node WSS: 45–65% Lethe vs. 15–25% native.
-- TTFT improvement at that regime: 1.6–2.2×.
-- Throughput at saturation: comparable per node; Lethe wins on aggregate.
-- Recovery time, R=2, single-node kill, end-to-end (RESTATED W11.1 against
-  a measured curve — docker bridge, fresh cluster, full R=2 reconvergence):
+PACE ICE, one NVIDIA L40S, `gemma-3-1b-it`, vLLM 0.19.1, median of 3. Baseline
+is vLLM native prefix cache ON. Full method + caveats: `docs/weekly/W12.md`.
+
+**Capacity crossover** — prefix-cache hit rate vs. working-set size:
+
+| WSS (× single-node KV budget) | 1 node, native cache | Lethe 3-node R=2 |
+| ----------------------------- | -------------------- | ---------------- |
+| 1×   | 98.8% | 98.8% |
+| 2×   | 0.0% (collapses) | 98.8% (sustains) |
+| 4×   | 0.0% | 85.2% |
+
+The earlier estimates on this line ("45–65% Lethe vs 15–25% native") were
+wrong in both directions: native collapses harder (to 0%, a clean cliff once
+WSS crosses the budget) and Lethe sustains higher (85–99%). Hit was confirmed
+real, not just present: config B served 17 320 KV blocks from Lethe at 2× and
+30 091 at 4× (`meta_load_blocks`).
+
+**TTFT — the capacity win does NOT convert to a latency win at 1B scale.**
+Native is flat ~23 ms even at 0% hit (recompute of a 256-token prefill on a
+1B model is cheap); Lethe is 53–81 ms (loopback fetch). The earlier "1.6–2.2×
+TTFT improvement" estimate is **retired** — it does not hold at this scale.
+The latency benefit requires per-token recompute cost to exceed fetch cost
+(larger model and/or RDMA). We measured 1B; we report 1B. Reporting a TTFT
+"win" here would require the dishonest cache-OFF baseline (rule 1) — we don't.
+
+- Recovery time, R=2, single-node kill, end-to-end. Two environments:
+
+  **W12 (PACE loopback, 3 processes, median of 3):** 3.7 s @ 200 blocks,
+  4.4 s @ 500, 7.6 s @ 1000, 12.0 s @ 2000. Loopback strips the docker
+  bridge's fixed per-RPC latency, so recovery is 3–4× faster *and* the
+  per-block re-replication cost becomes visible (grows with N). ~3 s
+  detection floor (`dead_after`) is consistent with the bridge curve.
+
+  **W11.1 (docker bridge, fresh cluster, full R=2 reconvergence):**
 
   | working set | recovery | residual | rate |
   | ----------- | -------- | -------- | ---- |
