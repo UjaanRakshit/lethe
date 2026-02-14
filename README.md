@@ -95,8 +95,37 @@ cd client && pip install -e .
 
 ```bash
 ./scripts/run_cluster.sh        # docker-compose up; brings up 3 nodes + Prom + Grafana
-python -m lethe_client.demo     # talks to the cluster
 ```
+
+## Failover demo (hit rate survives a node kill)
+
+One command brings up the cluster, inserts a corpus at R=2, hard-kills a node,
+and drives routed lookups while the cluster detects the death and
+re-replicates — W11's INV-5 made visual. It reuses the chaos harness, so it is
+the same code the suite asserts against (no bespoke demo path).
+
+```bash
+bash scripts/failover_demo.sh           # default scenario: sigkill
+# then open Grafana at http://localhost:3000  (dashboard: "Lethe — Distributed KV Cache")
+```
+
+Watch, in order of clarity:
+
+- **Cluster epoch** — steps up ~3.3 s after the kill (heartbeat detection,
+  `dead_after=3 s`). The cleanest visual.
+- **Under-replicated blocks** — spikes to the victim's in-route block count,
+  then drains to 0 as the survivors restore R=2.
+- **Cache hit rate** — stays high through the kill: survivors still hold the
+  R=2 replicas, so the server-side hit ratio does not crash. That is INV-5.
+  (The scenario's stdout also prints its own client-side ring hit-rate, which
+  dips ~1.00 → ~0.75 during the ~3 s detection window and recovers; those
+  client-side misses to the dead node never reach a live server, so they show
+  in the log, not on the Grafana ratio panel.)
+
+Verified run (pure cache, no GPU): epoch bumped at t+3.5 s; 48 blocks
+reconverged to R=2 by t+7.7 s; min ring hit-rate 0.75; all six invariants PASS.
+For a longer continuous signal, `bash chaos/run_suite.sh` runs six scenarios
+(~5 min) and leaves the stack up.
 
 ## Structure
 
