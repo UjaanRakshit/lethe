@@ -97,8 +97,30 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   RdmaConfig rdma_cfg;
   rdma_cfg.device_name = cfg_.rdma_device;
   rdma_cfg.listen_port = cfg_.rdma_port;
-  transport_ = std::make_unique<GrpcStreamTransport>(rdma_cfg,
-                                                     KvTransport::OnReceiveFn{});
+#ifdef LETHE_ENABLE_RDMA
+  // W12.2: real IbverbsTransport, selected at runtime by LETHE_USE_RDMA so a
+  // single binary serves the gRPC-vs-RDMA A/B benchmark. RDMA receives don't
+  // flow through the gRPC service handlers, so we give the transport an
+  // on_receive callback that lands a pushed block exactly as the gRPC Insert
+  // handler would — same Insert() path, same idempotent re-replication bounce.
+  if (std::getenv("LETHE_USE_RDMA") != nullptr) {
+    transport_ = std::make_unique<IbverbsTransport>(
+        rdma_cfg,
+        [this](BlockId id, std::vector<std::byte> bytes, StreamPurpose) {
+          KvBlock blk;
+          blk.id = id;
+          blk.data = std::move(bytes);
+          blk.tier = Tier::DRAM;
+          std::vector<KvBlock> one;
+          one.push_back(std::move(blk));
+          this->Insert(std::move(one), "", "rdma-recv");
+        });
+  } else
+#endif
+  {
+    transport_ = std::make_unique<GrpcStreamTransport>(
+        rdma_cfg, KvTransport::OnReceiveFn{});
+  }
   transport_->Start();
 
   // W10: Metrics is a leaf — everyone records, no one reads. Construct

@@ -83,16 +83,13 @@ target_include_directories(lethe_server PRIVATE ${LETHE_BLAKE3_DIR})
 
 if(LETHE_ENABLE_RDMA)
   target_compile_definitions(lethe_server PRIVATE LETHE_ENABLE_RDMA=1)
-  # NOTE: ibverbs / rdmacm link deps deferred until the IbverbsTransport
-  # implementation actually uses them. The current ibverbs_transport.cpp
-  # is a defined-symbol stub that aborts at runtime (gate #1 fallback
-  # per docs/decisions/W5_rdma_fallback.md). Linking against
-  # libibverbs/librdmacm when the .cpp uses none of their symbols would
-  # add a build-host dependency for zero runtime benefit. Re-add the
-  # following when the W12 PACE implementation lands:
-  #   find_library(LIBIBVERBS ibverbs REQUIRED)
-  #   find_library(LIBRDMACM  rdmacm  REQUIRED)
-  #   target_link_libraries(lethe_server PRIVATE ${LIBIBVERBS} ${LIBRDMACM})
+  # W12.2: the real IbverbsTransport (rdma_cm connection + ibv SEND/RECV) is
+  # live, so link the verbs libraries it uses. PACE ICE has libibverbs /
+  # librdmacm system-wide (/usr/lib64). Default (RDMA=OFF) builds still need
+  # neither — the stub TU isn't compiled and these links don't apply.
+  find_library(LIBIBVERBS ibverbs REQUIRED)
+  find_library(LIBRDMACM  rdmacm  REQUIRED)
+  target_link_libraries(lethe_server PRIVATE ${LIBIBVERBS} ${LIBRDMACM})
 endif()
 
 if(LETHE_ENABLE_METRICS)
