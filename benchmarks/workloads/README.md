@@ -1,9 +1,16 @@
 # Benchmark workloads
 
-## ShareGPT V3 (primary)
+> What W12 actually ran: the **synthetic prefix workload** (below), via
+> `benchmarks/crossover_sweep.py` — the cleaner instrument for the capacity
+> crossover claim. ShareGPT and BurstGPT below are realistic-traffic
+> follow-ups (download how-tos), not yet run. See docs/weekly/W12.md.
+
+## ShareGPT V3 (realistic-traffic follow-up — not yet run)
 
 The conventional LLM-serving benchmark trace. ~90K real human-LLM
 conversations with multi-turn structure, which exercises prefix caching well.
+Run this to answer "does it hold on real traffic"; it is the wrong instrument
+for a controlled capacity sweep (its uneven prefix-sharing confounds WSS).
 
 Download:
 ```
@@ -31,8 +38,12 @@ under realistic spikes.
 git clone https://github.com/HPMLL/BurstGPT
 ```
 
-## Synthetic prefix workload (smoke test)
+## Synthetic prefix workload (the W12 capacity instrument)
 
-`benchmarks.synth_prefix` generates conversations with controllable prefix
-overlap rate (0%, 25%, 50%, 90%) to characterize cache behavior cleanly. Use
-this for sanity checks; never report only synthetic numbers.
+`benchmarks/crossover_sweep.py` generates a controlled number of distinct
+fixed-length prefixes and sweeps that count as a multiple of the single-node KV
+budget. Because a prefix-cache hit depends on whether the working set fits —
+not on token content — this isolates the capacity effect cleanly and is the
+right tool for the crossover claim (it is what W12 reported). It is *not* a
+realism claim: for "does it hold on real traffic," run ShareGPT above. Don't
+present synthetic hit rates as evidence about real-trace prefix distributions.

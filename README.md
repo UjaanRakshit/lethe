@@ -44,7 +44,8 @@ distributed infra from current papers.
 | W9    | Disaggregated prefill/decode integration with two vLLM instances  |
 | W10   | Observability: Prometheus, Grafana, structured tracing            |
 | W11   | Chaos harness + failure-mode test suite                           |
-| W12   | ShareGPT benchmark sweeps, design doc, failover demo, polish      |
+| W12   | Capacity crossover sweep (synthetic prefixes), design doc,        |
+|       | failover demo, polish                                             |
 
 Risk: W5–6 (RDMA). If SoftRoCE starts eating more than 2.5 weeks, fall back to
 gRPC-over-TCP for the data path. The rest of the project stands.

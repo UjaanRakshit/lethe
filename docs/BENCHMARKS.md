@@ -27,9 +27,18 @@ shard. Show the crossover empirically.
 
 ## Workloads
 
-- ShareGPT V3 (primary; ~90K conversations, realistic prefix overlap).
-- BurstGPT (secondary; tests behavior under traffic spikes).
-- Synthetic prefix workload (smoke test only).
+- **Synthetic prefix workload — what W12 actually used.** Controlled count of
+  distinct fixed-length prefixes, swept as a multiple of the single-node KV
+  budget. It is the *cleaner instrument for the capacity claim*: a prefix-cache
+  hit depends on whether the working set fits, not on token content, so
+  synthetic prefixes give exact control of WSS and isolate the capacity effect
+  that a real trace's uneven prefix-sharing would confound. See
+  `benchmarks/crossover_sweep.py` and docs/DECISIONS.md (2026-05-29).
+- ShareGPT V3 (realistic-traffic follow-up, not yet run; ~90K conversations,
+  natural prefix overlap). Adds credibility for "does it hold on real traffic"
+  but is the wrong instrument for a controlled capacity crossover. How-to:
+  `benchmarks/workloads/README.md`.
+- BurstGPT (optional; behavior under traffic spikes). Not run.
 
 ## Measured numbers (W12)
 
