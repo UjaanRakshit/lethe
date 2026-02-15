@@ -2,7 +2,7 @@
 // isn't packaged for Ubuntu 22.04 and building it from source pulls in
 // civetweb + a protobuf metrics path we don't need; our metric families are
 // simple and metrics.hpp is pimpl'd so the backend is an implementation
-// detail. See docs/DECISIONS.md (2026-05-28).
+// detail.
 //
 // Storage / synchronization: ALL metric state is std::atomic, so every Record*
 // call is lock-free and sub-microsecond — no mutex on the hot Lookup/Insert

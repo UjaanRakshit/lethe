@@ -35,7 +35,7 @@ Assertions:
     reports decode_hit_tokens > 0 — proving Lethe SERVED the KV rather
     than vLLM recomputing (false-green guard).
 
-Diagnostics → tests/correctness/w9_results.json.
+Diagnostics → tests/correctness/disagg_results.json.
 
 Single-engine role-sequenced disaggregation (one engine, two phases).
 Physical two-instance disaggregation is out of scope here. See
@@ -61,8 +61,8 @@ torch = pytest.importorskip("torch", reason="torch not installed")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CHILD = Path(__file__).parent / "_run_disagg_for_w9.py"
-RESULTS_PATH = Path(__file__).parent / "w9_results.json"
+CHILD = Path(__file__).parent / "_run_disagg.py"
+RESULTS_PATH = Path(__file__).parent / "disagg_results.json"
 
 
 def _find_server() -> Path | None:

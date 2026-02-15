@@ -1,9 +1,9 @@
 # Benchmark workloads
 
-> What W12 actually ran: the **synthetic prefix workload** (below), via
-> `benchmarks/crossover_sweep.py` — the cleaner instrument for the capacity
-> crossover claim. ShareGPT and BurstGPT below are realistic-traffic
-> follow-ups (download how-tos), not yet run. See docs/weekly/W12.md.
+> The capacity crossover claim runs on the **synthetic prefix workload**
+> (below), via `benchmarks/crossover_sweep.py` — the cleaner instrument for
+> that claim. ShareGPT and BurstGPT below are realistic-traffic follow-ups
+> (download how-tos), not yet run.
 
 ## ShareGPT V3 (realistic-traffic follow-up — not yet run)
 
@@ -28,7 +28,7 @@ python -m benchmarks.preprocess_sharegpt \
     --tokenizer meta-llama/Llama-3.1-8B-Instruct
 ```
 
-## BurstGPT (optional, W12)
+## BurstGPT (optional)
 
 Captures burst patterns and inter-arrival distribution from real production
 traces. Useful for showing that Lethe's failover and load balancing hold
@@ -38,12 +38,12 @@ under realistic spikes.
 git clone https://github.com/HPMLL/BurstGPT
 ```
 
-## Synthetic prefix workload (the W12 capacity instrument)
+## Synthetic prefix workload (the capacity instrument)
 
 `benchmarks/crossover_sweep.py` generates a controlled number of distinct
 fixed-length prefixes and sweeps that count as a multiple of the single-node KV
 budget. Because a prefix-cache hit depends on whether the working set fits —
 not on token content — this isolates the capacity effect cleanly and is the
-right tool for the crossover claim (it is what W12 reported). It is *not* a
-realism claim: for "does it hold on real traffic," run ShareGPT above. Don't
-present synthetic hit rates as evidence about real-trace prefix distributions.
+right tool for the crossover claim. It is *not* a realism claim: for "does it
+hold on real traffic," run ShareGPT above. Don't present synthetic hit rates as
+evidence about real-trace prefix distributions.

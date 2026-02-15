@@ -78,7 +78,7 @@ def main():
     ax1.set_ylim(-5, 105)
     ax2.set_ylabel("TTFT p50 (ms)")
     ax2.set_title("TTFT vs working set (median of 3)")
-    fig.suptitle("Lethe W12: distributed cache sustains hit rate past the single-node "
+    fig.suptitle("Lethe: distributed cache sustains hit rate past the single-node "
                  "KV budget\n(gemma-3-1b, L40S; TTFT caveat: loopback fetch > 1B recompute)",
                  fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.93))

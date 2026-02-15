@@ -91,8 +91,7 @@ class KvTransport {
 // and currently the actual data path. Send invokes Insert RPCs (replication
 // push); Fetch invokes the Fetch RPC. Both run synchronously inside the call
 // and return a ready future — true async dispatch happens at the
-// Replicator's worker-pool layer above us. See
-// docs/decisions/W5_rdma_fallback.md for why gRPC is the data path despite
+// Replicator's worker-pool layer above us. gRPC is the data path despite
 // the "RDMA for KV transfer" wording in DESIGN.md §6.
 class GrpcStreamTransport : public KvTransport {
  public:
@@ -116,10 +115,9 @@ class GrpcStreamTransport : public KvTransport {
 
 // libibverbs / SoftRoCE transport. Header-only declaration unless
 // LETHE_ENABLE_RDMA=ON AND a SoftRoCE / real-IB device is present at
-// runtime. Per docs/decisions/W5_rdma_fallback.md this could not be
-// validated against real hardware (WSL2 kernel ships without the
-// InfiniBand subsystem); the abstraction stays so the swap is a
-// constructor change in main.cpp when hardware arrives.
+// runtime. This could not be validated against real hardware (WSL2 kernel
+// ships without the InfiniBand subsystem); the abstraction stays so the
+// swap is a constructor change in main.cpp when hardware arrives.
 class IbverbsTransport : public KvTransport {
  public:
   IbverbsTransport(RdmaConfig cfg, OnReceiveFn on_receive);

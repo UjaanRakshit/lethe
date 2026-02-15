@@ -942,7 +942,7 @@ def scenario_large(probe: ClusterProbe) -> ScenarioResult:
         f"(budget {budget_ms:.0f}ms)"
         if recovery_ms is not None and residual == 0
         else f"INCOMPLETE: {residual}/{n} still at R<{target} after "
-        f"{budget_ms:.0f}ms (Finding B would fail here pre-W11.1)",
+        f"{budget_ms:.0f}ms",
     )
     return res
 

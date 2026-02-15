@@ -44,12 +44,12 @@ from vllm import LLM, SamplingParams  # noqa: E402
 
 # Make `disagg` and the shared prompt set importable regardless of how
 # this child is launched (repo root for `import disagg`, this dir for
-# _run_vllm_for_w14). lethe_client is pip-installed in the venv.
+# _run_vllm_native). lethe_client is pip-installed in the venv.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
 sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
-from _run_vllm_for_w14 import PROMPTS  # noqa: E402  shared prompt set
+from _run_vllm_native import PROMPTS  # noqa: E402  shared prompt set
 
 
 def build_engine(mode: str, lethe_address: str, block_size: int,

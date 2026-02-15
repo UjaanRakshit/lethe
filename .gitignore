@@ -41,3 +41,6 @@ benchmarks/workloads/sharegpt_raw/
 
 # Local config
 .env
+
+# Test result outputs
+tests/correctness/*_results.json

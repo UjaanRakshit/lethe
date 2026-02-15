@@ -3,10 +3,9 @@
 // at cache_server/third_party/blake3/. Hides the C struct dance so
 // the rest of the codebase says blake3_full(bytes) → Hash256.
 //
-// The vendored sources are BLAKE3 1.5.4 portable-only (no SIMD).
-// W11+ may swap in libblake3-dev or SIMD-enabled blake3 if hashing
-// shows up in profiles; for W3-W4 the routing hash is one
-// call-per-Lookup, well off the hot path.
+// The vendored sources are BLAKE3 1.5.4 portable-only (no SIMD). Could swap
+// in a SIMD build if hashing ever shows up in profiles; today the routing
+// hash is one call per Lookup, well off the hot path.
 
 #include <array>
 #include <cstddef>

@@ -74,7 +74,7 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   // infiniband subsystem, so GrpcStreamTransport is the default data path.
   // IbverbsTransport still exists but is a defined-symbol stub that aborts if
   // constructed; the factory below never picks it because RdmaIsAvailable() is
-  // always-false without real hardware. See docs/decisions/W5_rdma_fallback.md.
+  // always-false without real hardware.
   RdmaConfig rdma_cfg;
   rdma_cfg.device_name = cfg_.rdma_device;
   rdma_cfg.listen_port = cfg_.rdma_port;

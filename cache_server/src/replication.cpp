@@ -4,7 +4,7 @@
 // movement through the abstraction — this is the swap point for the IB
 // hardware transition: change the factory in main.cpp to construct an
 // IbverbsTransport instead of GrpcStreamTransport and the data path switches
-// transparently. See docs/decisions/W5_rdma_fallback.md.
+// transparently.
 //
 //   * Async replication policy: fire-and-forget, bounded queue, 4 workers.
 //   * Queue overflow → drop with overflow_drops bump; re-replication catches
@@ -365,8 +365,8 @@ void Replicator::TriggerReReplication(
   //
   // Idempotent: the receiver's Insert dedups on BlockId, so re-pushing a block
   // a peer already has is a no-op — safe to over-include (we don't know which
-  // blocks a surviving peer is missing without an ACK channel; see the
-  // deferred-optimization note in docs/DECISIONS.md).
+  // blocks a surviving peer is missing without an ACK channel; adding one is a
+  // deferred optimization).
   if (router_ == nullptr || transport_ == nullptr || store_ == nullptr) {
     if (DebugRerepEnabled()) {
       std::fprintf(stderr, "[lethe %s] TriggerReReplication: nullptr dep; skipping\n",

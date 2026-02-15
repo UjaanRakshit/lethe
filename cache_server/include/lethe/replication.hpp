@@ -34,8 +34,7 @@ class Replicator {
 
   // Push a block to all replica successors. Called from Insert after the
   // local tier write succeeds. Returns the list of peers the push was
-  // QUEUED to (not ACKed; async replication is fire-and-forget — see
-  // docs/DECISIONS.md "Async replication policy realized").
+  // QUEUED to (not ACKed; async replication is fire-and-forget).
   std::vector<std::string> ReplicateOut(const KvBlock& block);
 
   // Attempt to fetch a block from any of the named replica peers. Returns

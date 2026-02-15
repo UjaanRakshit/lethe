@@ -40,7 +40,7 @@ recomputes and A==B==C passed as a FALSE GREEN. The hit-count gate in
 test_disagg_token_identical surfaced it; this setup genuinely
 exercises the load path.
 
-Diagnostics dumped to tests/correctness/w1_4_results.json regardless
+Diagnostics dumped to tests/correctness/token_identical_results.json regardless
 of pass/fail.
 
 Skips when:
@@ -65,8 +65,8 @@ torch = pytest.importorskip("torch", reason="torch not installed")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CHILD_SCRIPT = Path(__file__).parent / "_run_vllm_for_w14.py"
-RESULTS_PATH = Path(__file__).parent / "w1_4_results.json"
+CHILD_SCRIPT = Path(__file__).parent / "_run_vllm_native.py"
+RESULTS_PATH = Path(__file__).parent / "token_identical_results.json"
 
 
 def _find_server_binary() -> Path | None:

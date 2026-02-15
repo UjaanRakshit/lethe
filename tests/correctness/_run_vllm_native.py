@@ -6,8 +6,8 @@ Spawned as a subprocess by tests/correctness/test_token_identical.py
 so each run has an isolated vLLM engine (no cross-run state leakage).
 
 Usage:
-    python _run_vllm_for_w14.py --mode vanilla
-    python _run_vllm_for_w14.py --mode connector --lethe-address 127.0.0.1:5005
+    python _run_vllm_native.py --mode vanilla
+    python _run_vllm_native.py --mode connector --lethe-address 127.0.0.1:5005
 
 Determinism note: vLLM 0.19.1 has no general "force deterministic" flag
 on Ada (sm_89). VLLM_BATCH_INVARIANT exists but requires sm_90+. We

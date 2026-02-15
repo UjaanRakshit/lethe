@@ -636,7 +636,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
                 f"Lethe: unexpected kv_layer shape {tuple(kv_layer.shape)} "
                 f"for layer {layer_name!r}; expected (2, num_pages, "
                 f"page_size, ...). MLA layouts (no leading 2) and "
-                f"flat layouts (ndim<4) are not handled in W1."
+                f"flat layouts (ndim<4) are not handled."
             )
         page_size = kv_layer.shape[2]
         if page_size != metadata.block_size:

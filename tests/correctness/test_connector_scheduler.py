@@ -28,8 +28,8 @@ import pytest
 
 vllm = pytest.importorskip(
     "vllm",
-    reason="vllm not installed; install via .venv-vllm — see "
-    "docs/decisions/W1_vllm_pin.md",
+    reason="vllm not installed; install via .venv-vllm "
+    "(pinned to vllm==0.19.1)",
 )
 
 from vllm.config import (  # noqa: E402  — after importorskip

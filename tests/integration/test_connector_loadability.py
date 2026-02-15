@@ -11,9 +11,8 @@ Skips when vllm is not installed (no CUDA box, so vllm isn't
 pip-installable there). CI nodes with vllm 0.19.1 installed must pass
 this test.
 
-Reference: factory mechanism at ``factory.py:43-131`` of vllm 0.19.1
-(see ``docs/decisions/W1_vllm_pin.md`` for the pin rationale and line
-citations).
+Reference: factory mechanism at ``factory.py:43-131`` of vllm 0.19.1.
+The environment is pinned to vllm==0.19.1.
 """
 
 from __future__ import annotations
@@ -65,13 +64,11 @@ def _make_vllm_config() -> VllmConfig:
 
 def test_pin_is_honored():
     """The test environment is pinned to the version we actually
-    inspected in the decision doc. If this fails, the pin in
-    ``client/pyproject.toml`` and the line-citations in
-    ``docs/decisions/W1_vllm_pin.md`` are out of sync with reality.
+    inspected. If this fails, the pin in ``client/pyproject.toml`` is
+    out of sync with reality.
     """
     assert vllm.__version__ == "0.19.1", (
-        f"expected vllm==0.19.1 (see docs/decisions/W1_vllm_pin.md), "
-        f"got {vllm.__version__}"
+        f"expected vllm==0.19.1, got {vllm.__version__}"
     )
 
 
@@ -126,8 +123,8 @@ def test_abstract_methods_raise_with_subtask_label():
     }
 
     for (conn, method_args, side_label) in (
-        (sched, sched_method_args, "W1.3"),
-        (worker, worker_method_args, "W1.4"),
+        (sched, sched_method_args, "scheduler-side"),
+        (worker, worker_method_args, "worker-side"),
     ):
         for method_name, call_args in method_args.items():
             method = getattr(conn, method_name)

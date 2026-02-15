@@ -1,6 +1,5 @@
 // GrpcStreamTransport — default bulk-KV transport, used as the data path
-// because SoftRoCE is unavailable in the dev environment (see
-// docs/decisions/W5_rdma_fallback.md).
+// because SoftRoCE is unavailable in the dev environment.
 //
 // Wire model:
 //   * Send  → Insert RPC with a single Block. The push reaches the peer's
