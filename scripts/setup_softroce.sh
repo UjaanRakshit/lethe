@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# SoftRoCE setup for the RDMA path (W5–6).
+# SoftRoCE setup for the RDMA path.
 #
-# SoftRoCE (rxe) provides RDMA semantics over a regular Ethernet NIC, so
-# you can develop ibverbs code without buying IB hardware. Recruiters do not
-# distinguish between rxe and real ConnectX in a resume bullet; the API is
-# identical.
+# SoftRoCE (rxe) provides RDMA semantics over a regular Ethernet NIC, so you
+# can develop ibverbs code without IB hardware; the API is identical.
 #
 # Tested on Ubuntu 22.04 / 24.04 with kernels >= 5.15.
 

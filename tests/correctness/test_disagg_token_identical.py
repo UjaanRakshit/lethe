@@ -1,46 +1,45 @@
-"""W9 acceptance gate: Lethe-disaggregated prefill/decode produces the
-SAME tokens as vLLM's native prefix cache on the SAME hit/miss
-schedule, AND the decode phase genuinely loads KV from Lethe (not a
-false green via recompute).
+"""Lethe-disaggregated prefill/decode produces the SAME tokens as
+vLLM's native prefix cache on the SAME hit/miss schedule, AND the
+decode phase genuinely loads KV from Lethe (not a false green via
+recompute).
 
 Three runs, separate subprocesses (isolated vLLM engines):
 
-  NATIVE (rule-2 control): vLLM's OWN prefix cache. enable_prefix_
-    caching=True, no connector. Per prompt: a warm-up generate
-    populates the native cache with P's prefix, then a decode generate
-    HITS it. This puts the prefix on the cache-HIT side of the
-    boundary — the same schedule disagg runs on.
-  DISAGG (B): LetheCacheConnector on, enable_prefix_caching=False.
-    Per prompt: a PREFILL phase exports P's KV to Lethe, then a DECODE
+  NATIVE (control): vLLM's OWN prefix cache. enable_prefix_caching=True,
+    no connector. Per prompt: a warm-up generate populates the native
+    cache with P's prefix, then a decode generate HITS it. This puts
+    the prefix on the cache-HIT side of the boundary — the same
+    schedule disagg runs on.
+  DISAGG: LetheCacheConnector on, enable_prefix_caching=False. Per
+    prompt: a PREFILL phase exports P's KV to Lethe, then a DECODE
     phase imports it from Lethe and generates. Prefix is a cache HIT
     served by Lethe.
   VANILLA (informational): single-pass full recompute, no cache. This
     is on the cache-MISS side of the boundary.
 
-Why NATIVE is the gate, not VANILLA. CLAUDE.md rule 2 is explicit:
-the claim is NOT bit-identical ACROSS the cache-hit/cache-miss
-boundary (attention FP reductions are non-associative on GPU). The
-claim IS: given the same set of cache hits vs misses, Lethe+vLLM
-produces the same tokens as vLLM serving those same hits via its
-native prefix cache. So the apples-to-apples comparison is
-DISAGG (Lethe-hit) vs NATIVE (vLLM-hit). Comparing DISAGG vs VANILLA
-crosses the boundary and is EXPECTED to drift on some prompts — which
-it does (W9 first observed 3/10 prompts diverging at late token
-positions, the classic FP-drift signature). VANILLA is kept only as
-an informational record of that boundary effect.
+Why NATIVE is the gate, not VANILLA. The claim is NOT bit-identical
+ACROSS the cache-hit/cache-miss boundary (attention FP reductions are
+non-associative on GPU). The claim IS: given the same set of cache
+hits vs misses, Lethe+vLLM produces the same tokens as vLLM serving
+those same hits via its native prefix cache. So the apples-to-apples
+comparison is DISAGG (Lethe-hit) vs NATIVE (vLLM-hit). Comparing
+DISAGG vs VANILLA crosses the boundary and is EXPECTED to drift on
+some prompts at late token positions (the classic FP-drift signature).
+VANILLA is kept only as an informational record of that boundary
+effect.
 
 Assertions:
-  * token_ids_DISAGG[i] == token_ids_NATIVE[i] for all 10 prompts
-    (the rule-2 gate). A mismatch is stop-condition 1.
+  * token_ids_DISAGG[i] == token_ids_NATIVE[i] for all prompts (the
+    gate). A mismatch fails the test.
   * For prompts with >= 2 whole prefix blocks, DISAGG's decode phase
     reports decode_hit_tokens > 0 — proving Lethe SERVED the KV rather
-    than vLLM recomputing (false-green guard, stop-condition 2).
+    than vLLM recomputing (false-green guard).
 
 Diagnostics → tests/correctness/w9_results.json.
 
 Single-engine role-sequenced disaggregation (one engine, two phases).
-Physical two-instance disaggregation is W12/PACE. See
-disagg/orchestrator.py and docs/weekly/W9.md.
+Physical two-instance disaggregation is out of scope here. See
+disagg/orchestrator.py.
 
 Skips when vllm/torch missing, CUDA unavailable, or lethe_server not
 built.
@@ -100,7 +99,7 @@ pytestmark = [
     pytest.mark.skipif(_SERVER is None,
                        reason="lethe_server not built; run scripts/build.sh"),
     pytest.mark.skipif(not _HAS_CUDA,
-                       reason="CUDA unavailable; W9 needs a GPU"),
+                       reason="CUDA unavailable; this test needs a GPU"),
 ]
 
 
@@ -149,7 +148,7 @@ def test_disagg_token_identical():
 
     diagnostics: dict = {"model": "google/gemma-3-1b-it", "lethe_address": addr}
     try:
-        print("=== NATIVE (vLLM-prefix-cache control, rule-2 gate) ===", flush=True)
+        print("=== NATIVE (vLLM-prefix-cache control, the gate) ===", flush=True)
         run_native = _run_child("native", None)
         print("=== DISAGG (Lethe) ===", flush=True)
         run_b = _run_child("disagg", addr)
@@ -206,19 +205,19 @@ def test_disagg_token_identical():
     diagnostics["diverged_vs_vanilla"] = diverged_vanilla
     diagnostics["disagg_matches_native"] = (len(diverged) == 0)
     diagnostics["note"] = (
-        "Gate = DISAGG vs NATIVE (same cache-hit schedule, per CLAUDE.md "
-        "rule 2). diverged_vs_vanilla is informational — vanilla is full "
+        "Gate = DISAGG vs NATIVE (same cache-hit schedule). "
+        "diverged_vs_vanilla is informational — vanilla is full "
         "recompute (cache-MISS side of the boundary), where FP "
         "non-associativity legitimately drifts on some prompts."
     )
     RESULTS_PATH.write_text(json.dumps(diagnostics, indent=2))
-    print(f"\nW9 diagnostics → {RESULTS_PATH}")
+    print(f"\ndiagnostics → {RESULTS_PATH}")
     print(f"DISAGG vs NATIVE diverged: {diverged}")
     print(f"DISAGG vs VANILLA diverged (informational): {diverged_vanilla}")
 
-    # Gate 1: DISAGG == NATIVE on the same hit/miss schedule (rule 2).
+    # Gate 1: DISAGG == NATIVE on the same hit/miss schedule.
     if diverged:
-        lines = ["DISAGG != NATIVE (rule-2 gate FAILED). Per-prompt:"]
+        lines = ["DISAGG != NATIVE (gate FAILED). Per-prompt:"]
         for e in per_prompt:
             lines.append(
                 f"  prompt {e['prompt_index']}: match_native={e['match_native']} "
@@ -227,10 +226,10 @@ def test_disagg_token_identical():
         lines.append(f"\nFull diagnostics: {RESULTS_PATH}")
         pytest.fail("\n".join(lines))
 
-    # Gate 2: the decode phase actually hit Lethe (stop-condition 2 —
-    # false-green guard). Prompts with >= 2 whole prefix blocks must
-    # report decode_hit_tokens > 0. (A <=1-block prompt holds its only
-    # block back so >=1 token computes; 0 there is legitimate.)
+    # Gate 2: the decode phase actually hit Lethe (false-green guard).
+    # Prompts with >= 2 whole prefix blocks must report
+    # decode_hit_tokens > 0. (A <=1-block prompt holds its only block
+    # back so >=1 token computes; 0 there is legitimate.)
     multi_block = [e for e in per_prompt if e["n_prefix_blocks"] >= 2]
     assert multi_block, (
         "no prompt had >=2 prefix blocks; cannot prove Lethe load path. "

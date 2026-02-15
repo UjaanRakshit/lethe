@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Lethe chaos suite (W11). Brings up the 3-node docker cluster, then runs
-# five failure-injection scenarios sequentially and asserts the cluster
+# Lethe chaos suite. Brings up the 3-node docker cluster, then runs five
+# failure-injection scenarios sequentially and asserts the cluster
 # invariants (chaos/invariants.py). Target wall-clock: < 5 minutes.
 #
 # Exit code 0 iff every scenario passes. On failure, exits 1 and the final
@@ -43,8 +43,8 @@ start_ts=$(date +%s)
 # holds (idempotent over-push — it can't know which a peer is missing without
 # ACKs), a polluted store would inflate each scenario's recovery time and make
 # the size-aware INV-3 budget unfair. A clean store per scenario keeps recovery
-# proportional to that scenario's own corpus. (W11.1: the kBoundedScan=256 cap
-# no longer breaks completeness, so the LARGE scenario deliberately exceeds it.)
+# proportional to that scenario's own corpus. The LARGE scenario deliberately
+# exceeds the kBoundedScan=256 cap.
 fresh_cluster() {
   $COMPOSE down >/dev/null 2>&1
   $COMPOSE up -d >/dev/null 2>&1

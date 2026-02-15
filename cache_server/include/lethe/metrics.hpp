@@ -1,7 +1,5 @@
 #pragma once
-// Lethe — Prometheus metrics (W10).
-//
-// Uses prometheus-cpp. Metrics fall into four families:
+// Prometheus metrics via prometheus-cpp. Metrics fall into four families:
 //
 //   - lethe_requests_total{op="lookup|insert|stream",result="hit|miss|err"}
 //   - lethe_op_latency_seconds (histogram, per op)

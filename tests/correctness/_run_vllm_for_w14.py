@@ -1,6 +1,6 @@
-"""W1.4 child script: runs one of {vanilla, connector} configurations
-against the canned prompt set, prints a JSON line per prompt to
-stdout with token IDs + diagnostics, exits.
+"""Child script: runs one of {vanilla, connector, native} configurations
+against the canned prompt set, prints a JSON document on stdout with
+token IDs + diagnostics, exits.
 
 Spawned as a subprocess by tests/correctness/test_token_identical.py
 so each run has an isolated vLLM engine (no cross-run state leakage).
@@ -34,7 +34,6 @@ import time
 # IMPORTANT: env vars must be set BEFORE vllm import.
 os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
 # VLLM_BATCH_INVARIANT requires sm_90+; not available on 4060 (8.9).
-# Documented in the docstring above.
 
 import torch
 from vllm import LLM, SamplingParams
@@ -132,8 +131,8 @@ PROMPTS: list[str] = [
         "Assistant:"
     ),
     # 10. Shares prefix with prompt 5: same first ~140 tokens, then
-    #     diverges. The connector should see a long cache hit here on
-    #     run C (warm) if prompt 5 was just generated in the same run.
+    #     diverges. The connector should see a long cache hit here on a
+    #     warm run if prompt 5 was just generated in the same run.
     (
         "Photosynthesis is the biological process by which green plants, "
         "algae, and some bacteria convert light energy from the sun into "
@@ -166,11 +165,11 @@ def main() -> int:
         gpu_memory_utilization=0.85,
         block_size=args.block_size,
         seed=args.seed,
-        # W9 rule-2 reframe: native prefix cache ON only for the
-        # "native" control (it must serve the prefix as a cache HIT on
-        # the same schedule as the connector-warm run). vanilla and
-        # connector run with it OFF so they're unambiguously on the
-        # cache-MISS side (vanilla) / Lethe-only path (connector).
+        # native prefix cache ON only for the "native" control (it must
+        # serve the prefix as a cache HIT on the same schedule as the
+        # connector-warm run). vanilla and connector run with it OFF so
+        # they're unambiguously on the cache-MISS side (vanilla) /
+        # Lethe-only path (connector).
         enable_prefix_caching=(args.mode == "native"),
     )
     if args.mode == "connector":
@@ -206,7 +205,7 @@ def main() -> int:
     # One prompt at a time so batch composition is constant across runs.
     # In "native" mode each prompt gets a warm-up generate first so the
     # prefix lands in vLLM's own prefix cache; the timed decode then
-    # HITS that cache — the rule-2 control for the connector-warm run.
+    # HITS that cache — the control for the connector-warm run.
     warm_sp = SamplingParams(temperature=0.0, max_tokens=1, seed=args.seed)
     t_gen_start = time.time()
     results: list[dict] = []

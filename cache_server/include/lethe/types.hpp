@@ -1,5 +1,5 @@
 #pragma once
-// Lethe — common types shared across cache subsystems.
+// Common types shared across cache subsystems.
 
 #include <array>
 #include <cstddef>
@@ -32,9 +32,9 @@ enum class StreamPurpose : std::uint8_t {
   Promotion = 2,         // tier promotion from another node's hotter copy
 };
 
-// 32-byte content hash. BLAKE3 — see DESIGN.md §1 and CLAUDE.md "What to
-// never do." The C++ and Python implementations of `chained_block_hash`
-// MUST produce identical bytes for the same `(prev_hash, tokens)`.
+// 32-byte content hash. BLAKE3 — see DESIGN.md §1. The C++ and Python
+// implementations of `chained_block_hash` MUST produce identical bytes for
+// the same `(prev_hash, tokens)`.
 using Hash256 = std::array<std::byte, 32>;
 
 // Identifies a single KV block.
@@ -58,7 +58,7 @@ struct BlockId {
 // Hash functor for unordered containers. NOT a content hash — this is an
 // in-memory combiner over the already-strong BLAKE3 content digest plus
 // the (layer, head_group, model_id) disambiguators. The two language
-// runtimes do not need to agree on this; see CLAUDE.md.
+// runtimes do not need to agree on this.
 struct BlockIdHash {
   std::size_t operator()(const BlockId& b) const noexcept {
     std::size_t h;
@@ -90,12 +90,11 @@ struct PeerStatus {
   bool suspected = false;         // proto field 3
 };
 
-// A peer entry in the static seed list (W3-W4): node_id is what the
-// hash ring routes on, address is the host:port gRPC dial string the
-// Replicator uses to open a channel. The two are decoupled because
-// node_id is a stable identity (used in BlockId routing) while the
-// address is a transport detail; in W8+ the same node_id might
-// migrate to a new address.
+// A peer entry in the static seed list: node_id is what the hash ring
+// routes on, address is the host:port gRPC dial string the Replicator uses
+// to open a channel. The two are decoupled because node_id is a stable
+// identity (used in BlockId routing) while the address is a transport
+// detail; the same node_id might later migrate to a new address.
 struct StaticPeer {
   std::string node_id;
   std::string address;            // "host:port"

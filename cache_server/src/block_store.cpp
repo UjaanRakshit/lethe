@@ -1,21 +1,15 @@
-// Lethe — single-tier block store (W1).
+// Single-tier block store.
 //
-// Thread-safety: `shared_mutex` for reader-favored hot paths. Writers
-// (Put, Erase) take a unique_lock; readers (Get, Snapshot) take a
-// shared_lock. `used_bytes_` is std::atomic so cheap unlocked reads
-// from metrics work; all *updates* still happen inside the write lock
-// so Put+Erase races can't race-corrupt the accounting.
+// Thread-safety: `shared_mutex` for reader-favored hot paths. Writers take a
+// unique_lock; readers take a shared_lock. `used_bytes_` is atomic for cheap
+// unlocked metrics reads, but updates happen inside the write lock so
+// Put/Erase races can't corrupt the accounting.
 //
-// Lifetime contract: Get returns a span into the stored KvBlock.data
-// vector. unordered_map does NOT invalidate references to elements
-// on rehash (per the standard), so concurrent Puts that grow the map
-// don't invalidate existing spans. Erase DOES invalidate the element;
-// callers must either copy the span before any mutation on that
-// BlockId or hold some other guarantee that no Erase will land. The
-// only direct caller at and above this layer is TieredStore::Get,
-// which copies the span into an owned vector before returning to
-// upper layers (W7 owned-bytes contract on LookupResult::Entry::
-// local_data) — so the lend/borrow window stays inside TieredStore.
+// Lifetime: Get returns a span into the stored KvBlock.data. unordered_map
+// doesn't invalidate references on rehash, so concurrent Puts that grow the
+// map keep existing spans valid; Erase does invalidate. The only caller above
+// this layer is TieredStore::Get, which copies the span into an owned vector
+// before returning — so the lend/borrow window stays inside TieredStore.
 
 #include "lethe/block_store.hpp"
 
@@ -37,9 +31,8 @@ bool BlockStore::Put(KvBlock block) {
 
   if (auto it = blocks_.find(block.id); it != blocks_.end()) {
     // Idempotent on key. BlockId is a content hash, so two blocks with
-    // the same id MUST have the same bytes; nothing to do. We don't
-    // touch used_bytes_ either — the previously-counted bytes are
-    // still there.
+    // the same id have the same bytes; nothing to do, and used_bytes_
+    // already counts them.
     return true;
   }
 
@@ -61,10 +54,8 @@ std::optional<std::span<const std::byte>> BlockStore::Get(const BlockId& id) {
   if (it == blocks_.end()) {
     return std::nullopt;
   }
-  // KvBlock.data is std::vector<std::byte>; .data()/.size() are stable
-  // across unordered_map rehashes (the standard guarantees no
-  // reference invalidation on rehash). The span is valid until an
-  // Erase or replacing Put on this same id.
+  // .data()/.size() are stable across unordered_map rehashes; the span is
+  // valid until an Erase or replacing Put on this same id.
   const auto& kv = it->second;
   return std::span<const std::byte>(kv.data.data(), kv.data.size());
 }
@@ -94,10 +85,8 @@ std::vector<BlockMeta> BlockStore::Snapshot() const {
     m.id = id;
     m.tier = tier_;
     m.size_bytes = kv.data.size();
-    // W1: no per-access bookkeeping yet (the SIEVE visited bit lands
-    // when Evictor::MarkVisited fires in W8). last_access_epoch is
-    // seeded to insert_epoch so the field is well-defined; the SIEVE
-    // hand will manage `visited` from W8 onward.
+    // last_access_epoch is seeded to insert_epoch so the field is
+    // well-defined; the SIEVE hand manages `visited`.
     m.insert_epoch = kv.inserted_epoch;
     m.last_access_epoch = kv.inserted_epoch;
     m.visited = false;

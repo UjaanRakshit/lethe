@@ -1,11 +1,12 @@
-"""W12 capacity-crossover sweep: native single-node prefix cache vs. Lethe.
+"""Capacity-crossover sweep: native single-node prefix cache vs. Lethe.
 
-The claim under test (the headline W12 result): a distributed prefix cache
-sustains hit rate when the working set exceeds a single node's KV memory,
-where vLLM's own single-node prefix cache collapses.
+The claim under test: a distributed prefix cache sustains hit rate when the
+working set exceeds a single node's KV memory, where vLLM's own single-node
+prefix cache collapses.
 
 Two configs, identical workload, identical GPU + gpu_memory_utilization:
-  A  vLLM, native prefix caching ON  — the honest baseline (CLAUDE.md rule 1).
+  A  vLLM, native prefix caching ON  — the honest baseline (working set sized
+     to exceed single-node KV memory).
   B  same + LetheCacheConnector against 3 loopback lethe_server nodes (R=2),
      with Lethe DRAM raised (LETHE_DRAM_BYTES) so overflow lands in Lethe.
 
@@ -18,16 +19,16 @@ engines in one process does not release GPU memory between them.
 Budget is set by gpu_memory_utilization, deliberately NOT
 num_gpu_blocks_override: the override survives consecutive-identical reuse but
 silently breaks native prefix reuse under interleaved access (verified), which
-would fake a crossover. See docs/DECISIONS.md (2026-05-29).
+would fake a crossover.
 
 Env: W12_CONFIG=A|B, W12_NDIST, W12_REP, W12_MODEL, W12_GPU_UTIL,
      W12_LETHE_DRAM (bytes/node), W12_OUTDIR, LETHE_SERVER_BIN,
      LETHE_EXTRA_LIB (extra LD_LIBRARY_PATH for the server subprocess; on PACE
      the conda env lib + spack gcc-12.3 lib64 — leave empty on a normal box).
 
-How this was run for W12: PACE ICE, one L40S per SLURM job (--exclusive),
-gemma-3-1b-it, util=0.12, W12_NDIST in {32,64,128,256,512,1024}, 3 reps each;
-results consolidated by plot_crossover.py. See docs/weekly/W12.md.
+Reference run: PACE ICE, one L40S per SLURM job (--exclusive), gemma-3-1b-it,
+util=0.12, W12_NDIST in {32,64,128,256,512,1024}, 3 reps each; results
+consolidated by plot_crossover.py.
 """
 from __future__ import annotations
 

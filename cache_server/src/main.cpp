@@ -1,13 +1,9 @@
-// Lethe — cache server entry point.
+// Cache server entry point. Builds a CacheConfig, instantiates LetheCache,
+// stands up the gRPC server, blocks on a shutdown signal.
 //
-// Builds a CacheConfig, instantiates LetheCache, stands up the gRPC
-// server, blocks on a shutdown signal.
-//
-// The gRPC service implementation lives at the bottom of this file as
-// per cache_server/CLAUDE.md ("gRPC service implementations live in
-// src/main.cpp for now; split when they grow past ~300 lines"). All
-// the actual business logic delegates to LetheCache; the shim is a
-// straight deserialize → call → serialize loop with no policy in it.
+// The gRPC service implementation lives at the bottom of this file. All
+// business logic delegates to LetheCache; the shim is a straight
+// deserialize → call → serialize loop with no policy in it.
 
 #include <atomic>
 #include <chrono>
@@ -34,13 +30,9 @@ namespace {
 std::atomic<bool> g_shutdown{false};
 void HandleSignal(int) { g_shutdown.store(true); }
 
-// Transport factory: chooses GrpcStreamTransport (default) vs
-// IbverbsTransport (when -DLETHE_ENABLE_RDMA=ON and the rxe device is
-// usable). LetheCache owns the returned unique_ptr<KvTransport>.
-//
-// W1: this factory is unused — the cache doesn't take a KvTransport
-// yet (no Replicator). W4+ wires it in when replication needs a
-// non-control-plane bulk transport.
+// Transport factory: chooses GrpcStreamTransport (default) vs IbverbsTransport
+// (when -DLETHE_ENABLE_RDMA=ON and the rxe device is usable). LetheCache owns
+// the returned unique_ptr<KvTransport>.
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -91,12 +83,10 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
     }
     LookupResult result =
         cache_->Lookup(ids, req->request_id(), req->requesting_node());
-    // W7: Entry::local_data is an owned vector<byte> (not a borrowed
-    // span). No lifetime gymnastics required — we can read it whenever
-    // we want, and the proto's LookupResponse intentionally carries
-    // no bytes anyway (just per-block metadata); the actual payload
-    // goes back via Fetch / StreamBlocks. So local_data isn't even
-    // referenced from here, which keeps the wire response cheap.
+    // Entry::local_data is an owned vector, so no lifetime gymnastics. The
+    // LookupResponse intentionally carries no bytes (just per-block
+    // metadata); the payload goes back via Fetch / StreamBlocks, so
+    // local_data isn't referenced here and the wire response stays cheap.
     for (const auto& entry : result.entries) {
       if (entry.where == LookupResult::Entry::Where::LocalHit) {
         auto* hit = resp->add_hits();
@@ -127,8 +117,8 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
       const std::string& payload = b.kv_data();
       kv.data.resize(payload.size());
       std::memcpy(kv.data.data(), payload.data(), payload.size());
-      // W7: respect the client's tier_hint. 0=HBM, 1=DRAM, 2=SSD.
-      // Out-of-range or missing → default to DRAM (the always-on tier).
+      // Respect the client's tier_hint. 0=HBM, 1=DRAM, 2=SSD. Out-of-range
+      // or missing → default to DRAM (the always-on tier).
       const std::uint32_t raw_hint = b.tier_hint();
       kv.tier = (raw_hint <= 2)
                     ? static_cast<Tier>(raw_hint)
@@ -149,9 +139,8 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
     BlockId id = BlockIdFromProto(req->id());
     BlockIdToProto(id, resp->mutable_id());
 
-    // W8: use the non-recursive FetchLocal path. The previous Lookup-
-    // based implementation recursed: Fetch handler → cache_->Lookup
-    // → read-repair (now firing post-W8 router fix) → FetchFromAny
+    // Use the non-recursive FetchLocal path. A Lookup-based implementation
+    // recursed: Fetch handler → cache_->Lookup → read-repair → FetchFromAny
     // → peer Fetch RPC → peer Lookup → peer read-repair → ... For a
     // cold-cache block this looped until every peer timed out, killing
     // throughput. FetchLocal only consults the local TieredStore.
@@ -169,10 +158,9 @@ class LetheServiceImpl final : public ::lethe::rpc::LetheCache::Service {
       grpc::ServerContext* /*ctx*/,
       grpc::ServerReader<::lethe::rpc::BlockChunk>* reader,
       ::lethe::rpc::StreamAck* resp) override {
-    // Client-streaming: peer pushes blocks at us. W1 collects them
-    // into LetheCache::IngestStreamedBlock. The chunked-large-block
-    // reassembly path (offset/last fields) lands in W4 when read-repair
-    // streams big payloads.
+    // Client-streaming: peer pushes blocks at us; we collect them into
+    // LetheCache::IngestStreamedBlock. Chunked-large-block reassembly
+    // (offset/last fields) is handled when read-repair streams big payloads.
     ::lethe::rpc::BlockChunk chunk;
     std::uint32_t received = 0;
     std::uint64_t total_bytes = 0;
@@ -271,9 +259,8 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
-  // CLI: positional [node_id] [port] + optional --peers <spec>.
-  // Format chosen for the run_3node.sh script's simplicity; argparse
-  // would be heavier than this needs to be at W4 scope.
+  // CLI: positional [node_id] [port] + optional --peers <spec>. Format chosen
+  // for the run_3node.sh script's simplicity; argparse would be overkill.
   lethe::CacheConfig cfg;
   cfg.node_id = (argc > 1) ? argv[1] : "node0";
   if (argc > 2) {
@@ -290,19 +277,18 @@ int main(int argc, char** argv) {
   }
   cfg.seed_peers = ParsePeerList(peers_spec, cfg.node_id);
 
-  // W1: keep capacity defaults small enough to fit on a laptop. The
-  // hard rule is "default builds don't link ibverbs"; the soft choice
-  // here is "default builds don't grab 32 GiB of host RAM either."
+  // Keep capacity defaults small enough to fit on a laptop — default builds
+  // shouldn't grab 32 GiB of host RAM.
   cfg.dram_bytes = 1ULL << 30;   // 1 GiB
-  // W7: enable a modest SSD tier by default so demotion paths get
-  // exercised by smoke tests and the 3-node Python integration suite.
-  // Per-node path keeps multiple lethe_servers on the same machine
-  // from clobbering each other's SSD file.
+  // Enable a modest SSD tier by default so demotion paths get exercised by
+  // smoke tests and the 3-node Python integration suite. Per-node path keeps
+  // multiple lethe_servers on the same machine from clobbering each other's
+  // SSD file.
   cfg.ssd_bytes = 256ULL << 20;  // 256 MiB
   cfg.ssd_path = std::string("/tmp/lethe-") + cfg.node_id + "/ssd";
 
-  // Benchmark knob: the W12 crossover sweep sizes the working set well past
-  // the laptop defaults, so let the harness raise the tier budgets without a
+  // Benchmark knob: the crossover sweep sizes the working set well past the
+  // laptop defaults, so let the harness raise the tier budgets without a
   // recompile. Bytes, base-10. Unset/zero/garbage -> keep the defaults above.
   if (const char* d = std::getenv("LETHE_DRAM_BYTES")) {
     if (std::uint64_t v = std::strtoull(d, nullptr, 10)) cfg.dram_bytes = v;

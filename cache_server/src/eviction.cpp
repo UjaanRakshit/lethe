@@ -1,40 +1,35 @@
-// Lethe — eviction (W8).
+// Eviction.
 //
-// Per-tier eviction threads driving CLOCK-style SIEVE: each thread
-// wakes every cfg.scan_interval (default 500ms), checks whether its
-// tier's used_bytes exceeds the high watermark, and if so walks a
-// hand pointer through the tier's snapshot picking victims by the
-// SIEVE rule:
+// Per-tier eviction threads driving CLOCK-style SIEVE: each thread wakes every
+// cfg.scan_interval (default 500ms), checks whether its tier's used_bytes
+// exceeds the high watermark, and if so walks a hand pointer through the
+// tier's snapshot picking victims by the SIEVE rule:
 //
 //   if visited:   clear bit, advance hand           (2nd chance)
 //   if !visited:  evict block, advance hand         (victim)
 //
 // Cross-tier handling on evict:
-//   * HBM victim → try TieredStore::Demote to DRAM. If DRAM full,
-//     fall through to hard Erase.
+//   * HBM victim → try TieredStore::Demote to DRAM. If DRAM full, hard Erase.
 //   * DRAM victim → try Demote to SSD. If SSD full, hard Erase.
 //   * SSD victim → hard Erase (no slower tier).
 //
-// Cluster-wide broadcast: after each pass, batch all evicted block IDs
-// into ONE EvictBroadcast RPC per alive peer. Best-effort — failures
-// are logged but don't block the next pass. The receiver records
-// "peer evicted these" in its own Evictor; read-repair MAY consult
-// (the wire is here, the optimization is a small follow-up).
+// Cluster-wide broadcast: after each pass, batch all evicted block IDs into
+// ONE EvictBroadcast RPC per alive peer. Best-effort — failures are logged but
+// don't block the next pass. The receiver records "peer evicted these" in its
+// own Evictor; read-repair MAY consult it (wire is here, optimization is a
+// follow-up).
 //
-// SIEVE-vs-CLOCK note: true SIEVE relies on FIFO insertion order. Our
-// BlockStore stores blocks in an unordered_map; we walk the snapshot
-// in iteration order, not insertion order. That makes our impl
-// equivalent to CLOCK with a visited bit, not strict SIEVE. For W8
-// acceptance (visited-bit semantics + watermark behavior + cross-tier
-// demote) the difference doesn't matter; an insertion-ordered deque
-// alongside the map would restore exact SIEVE if W11 chaos surfaces
-// a regression. Documented in DECISIONS.md.
+// SIEVE-vs-CLOCK: true SIEVE relies on FIFO insertion order. BlockStore uses
+// an unordered_map and we walk the snapshot in iteration order, so this is
+// CLOCK with a visited bit, not strict SIEVE. For visited-bit + watermark +
+// cross-tier-demote behavior the difference doesn't matter; an
+// insertion-ordered deque alongside the map would restore exact SIEVE if
+// needed. Documented in DECISIONS.md.
 //
-// Threading: each tier has its own std::thread. There is no shared
-// state between the eviction threads beyond the read-only
-// TieredStore* and Membership* — both subsystems serialize their own
-// internals. EvictBroadcast stubs are per-peer with their own mutex
-// in EvictorState::stubs_mu.
+// Threading: each tier has its own std::thread. No shared state between the
+// threads beyond the read-only TieredStore* and Membership* — both serialize
+// their own internals. EvictBroadcast stubs are per-peer behind
+// EvictorState::stubs_mu.
 
 #include "lethe/eviction.hpp"
 
@@ -101,10 +96,9 @@ struct EvictorState {
                                std::unique_ptr<::lethe::rpc::LetheCache::Stub>>>
       stubs;
 
-  // Tracks "peer recently evicted these blocks." Bounded loosely to
-  // 4096 entries per peer (oldest dropped via set rotation; W8 keeps
-  // it simple by clearing the set when it grows past the bound). Read
-  // by `peer_evicted_count_for_testing`; FetchFromAny does not yet
+  // Tracks "peer recently evicted these blocks." Loosely bounded to 4096
+  // entries per peer — we just clear the set when it grows past the bound.
+  // Read by `peer_evicted_count_for_testing`; FetchFromAny does not yet
   // consult this — wire is here, consumer is a follow-up.
   std::mutex peer_evict_mu;
   std::unordered_map<std::string, std::unordered_set<BlockId, BlockIdHash>>
@@ -207,10 +201,10 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
   const std::size_t cap = store_->capacity_bytes(tier);
   const std::size_t used = store_->used_bytes(tier);
 
-  // W10: emit tier usage every scan (BEFORE the watermark early-return)
-  // so the dashboard's lethe_tier_bytes gauge tracks usage continuously,
-  // not only when a tier is under eviction pressure. Piggybacks on the
-  // 500ms scan cadence per tier-thread rather than a dedicated emitter.
+  // Emit tier usage every scan (BEFORE the watermark early-return) so the
+  // dashboard's lethe_tier_bytes gauge tracks usage continuously, not only
+  // under eviction pressure. Piggybacks on the 500ms per-tier scan cadence
+  // rather than a dedicated emitter.
   if (metrics_ != nullptr && cap > 0) {
     metrics_->RecordTierUsage(tier, used, cap);
   }
@@ -290,8 +284,8 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
   }
   r.bytes_freed = freed_local;
 
-  // W10: record the eviction pass (blocks evicted across this tier +
-  // bytes freed). lethe_eviction_blocks_total / _bytes_freed_total.
+  // Record the eviction pass (blocks evicted across this tier + bytes freed):
+  // lethe_eviction_blocks_total / _bytes_freed_total.
   const std::size_t evicted_count =
       r.hbm_evicted + r.dram_evicted + r.ssd_evicted;
   if (metrics_ != nullptr && evicted_count > 0) {
@@ -337,11 +331,9 @@ void Evictor::BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted) {
   auto* impl = impl_for(this);
   if (impl == nullptr || membership_ == nullptr) return;
 
-  // Pull a snapshot of alive peer addresses. AllPeerAddresses returns
-  // all peers we know about; Membership filters dead from there in W8
-  // (alive_peers only). For W8 we send to every known address — if a
-  // peer is dead, the RPC fails fast and the eviction broadcast is
-  // lost, which is fine per the best-effort contract.
+  // Pull a snapshot of peer addresses. We send to every known address — if a
+  // peer is dead the RPC fails fast and the broadcast is lost, which is fine
+  // per the best-effort contract.
   auto addresses = membership_->AllPeerAddresses();
   if (addresses.empty()) return;
 
@@ -378,9 +370,9 @@ void Evictor::BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted) {
     ctx.set_deadline(std::chrono::system_clock::now() +
                      std::chrono::milliseconds(kBroadcastDeadlineMs));
     (void)stub->EvictBroadcast(&ctx, req, &resp);
-    // Failures swallowed per CLAUDE.md rule 2 (never block cache work
-    // on peer liveness). The eviction itself already happened locally;
-    // a missed broadcast costs one wasted RPC at the receiver later.
+    // Failures swallowed — never block cache work on peer liveness. The
+    // eviction already happened locally; a missed broadcast costs one wasted
+    // RPC at the receiver later.
   }
 }
 

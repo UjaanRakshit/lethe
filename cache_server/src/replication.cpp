@@ -1,39 +1,22 @@
-// Lethe — replication + read-repair (W4, refactored W5-6 for KvTransport).
+// Replication + read-repair.
 //
-// W5-6 change: Replicator no longer owns gRPC channels directly. It now
-// holds a KvTransport* and delegates ALL peer-to-peer block movement
-// through the abstraction. This is the swap point for the W12 IB
+// Replicator holds a KvTransport* and delegates ALL peer-to-peer block
+// movement through the abstraction — this is the swap point for the IB
 // hardware transition: change the factory in main.cpp to construct an
-// IbverbsTransport instead of GrpcStreamTransport and the Replicator
-// transparently switches data paths. See
-// docs/decisions/W5_rdma_fallback.md.
+// IbverbsTransport instead of GrpcStreamTransport and the data path switches
+// transparently. See docs/decisions/W5_rdma_fallback.md.
 //
-// What stayed the same:
 //   * Async replication policy: fire-and-forget, bounded queue, 4 workers.
-//   * Queue overflow → drop with overflow_drops bump; W8 re-replication
-//     catches up.
-//   * FetchFromAny semantics: parallel fan-out to replicas, first
-//     non-empty wins, abandon laggards. 500ms per-call deadline (the
-//     deadline now lives inside the transport implementation; the
-//     wait-loop budget stays here).
+//   * Queue overflow → drop with overflow_drops bump; re-replication catches
+//     up later.
+//   * FetchFromAny: parallel fan-out (std::async per peer) to replicas, first
+//     non-empty wins, abandon laggards. The 500ms per-call deadline lives in
+//     the transport; the wait-loop budget stays here.
 //
-// What changed:
-//   * No more PeerClient class (it moved into GrpcStreamTransport).
-//   * No more pool_mu_ in Replicator (channels live in the transport).
-//   * Workers call transport_->Send and block on the returned future
-//     (which is ready-by-return for GrpcStreamTransport's
-//     synchronous-inside-call shape). The queue + N-workers limit
-//     keeps N concurrent Sends in flight.
-//   * FetchFromAny uses std::async per peer to call
-//     transport_->Fetch in parallel — same fan-out shape as W4.
-//
-// Why this isn't a breaking change for W4 tests:
-//   * Wire format is unchanged. GrpcStreamTransport invokes the same
-//     Insert / Fetch RPCs the W4 Replicator did directly.
-//   * Async-replication semantics (fire-and-forget, bounded queue) are
-//     preserved. Workers still pop, Send, swallow the result.
-//   * EnsurePeerClient / DropPeerClient still on Replicator's API;
-//     LetheCache's ctor calls them per seed peer as before.
+// Wire format is the same Insert / Fetch RPCs regardless of transport, so the
+// GrpcStreamTransport path resolves Send/Fetch futures synchronously inside
+// the call while an ibverbs transport resolves them on its CQ-polling thread;
+// the queue + N-workers limit keeps N concurrent Sends in flight either way.
 
 #include "lethe/replication.hpp"
 
@@ -65,12 +48,12 @@ constexpr std::size_t kReplicationQueueMax = 1024;
 constexpr int kReplicationWorkers = 4;
 constexpr int kFetchTimeoutMs = 500;
 
-// W11.1: re-replication is dispatched in bounded batches so a single
-// membership change doesn't enqueue an unbounded burst. The sweep thread
-// drains successive batches every kReReplicationSweepInterval until the
-// round's whole candidate set is covered — that's the Finding B fix
-// (previously one capped pass ran and nothing re-triggered, so working
-// sets > kReReplicationBatch stayed under-replicated indefinitely).
+// Re-replication is dispatched in bounded batches so a single membership
+// change doesn't enqueue an unbounded burst. The sweep thread drains
+// successive batches every kReReplicationSweepInterval until the round's whole
+// candidate set is covered. (An earlier version ran one capped pass with
+// nothing to re-trigger, so working sets > kReReplicationBatch stayed
+// under-replicated indefinitely.)
 constexpr std::size_t kReReplicationBatch = 256;
 constexpr auto kReReplicationSweepInterval = std::chrono::milliseconds(250);
 
@@ -86,7 +69,7 @@ bool DebugRerepEnabled() {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Internal pool state (pimpl via TU-local registry — same pattern as W4)
+// Internal pool state (pimpl via TU-local registry)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -108,12 +91,12 @@ struct ReplicatorPoolState {
   std::atomic<std::uint64_t> replicate_attempts{0};
   std::atomic<std::uint64_t> replicate_failures{0};
 
-  // W11.1 — periodic re-replication sweep. `rerep_mu` guards the round
-  // state. A round is the full set of in-route blocks this node holds at
-  // the time of a membership change; the sweep thread drains it in
-  // kReReplicationBatch-sized, queue-back-pressured chunks (advancing the
-  // cursor only for blocks actually enqueued) until the cursor reaches the
-  // end. lock order is ALWAYS rerep_mu -> mu (queue); workers take only mu.
+  // Periodic re-replication sweep. `rerep_mu` guards the round state. A round
+  // is the full set of in-route blocks this node holds at the time of a
+  // membership change; the sweep thread drains it in kReReplicationBatch-sized,
+  // queue-back-pressured chunks (advancing the cursor only for blocks actually
+  // enqueued) until the cursor reaches the end. Lock order is ALWAYS rerep_mu
+  // -> mu (queue); workers take only mu.
   std::mutex rerep_mu;
   std::vector<BlockId> rerep_round;
   std::size_t rerep_cursor = 0;
@@ -158,12 +141,10 @@ Replicator::Replicator(std::string local_node_id,
       store_(store),
       transport_(transport),
       metrics_(metrics) {
-  // store_ is stashed for W8's TriggerReReplication (scans the local
-  // store for under-replicated blocks after a peer is declared dead).
-  // The (void) cast satisfies clang's -Wunused-private-field without
-  // the cross-compiler quirks of [[maybe_unused]] on a data member;
-  // same pattern as Membership::router_ / replicator_ (commit
-  // 8b5b7f5).
+  // store_ is stashed for TriggerReReplication (scans the local store for
+  // under-replicated blocks after a peer is declared dead). The (void) cast
+  // satisfies clang's -Wunused-private-field without the cross-compiler quirks
+  // of [[maybe_unused]] on a data member; same pattern as Membership.
   (void)store_;
   auto state = std::make_unique<ReplicatorPoolState>();
   ReplicatorPoolState* raw = state.get();
@@ -221,7 +202,7 @@ Replicator::Replicator(std::string local_node_id,
           ok = false;
         }
         if (ok && metrics_ != nullptr) {
-          // W10: record the bytes + latency of this block transfer.
+          // Record the bytes + latency of this block transfer.
           metrics_->RecordStreamBytes(
               task.block.data.size(),
               std::chrono::steady_clock::now() - send_t0);
@@ -235,24 +216,21 @@ Replicator::Replicator(std::string local_node_id,
                          static_cast<unsigned long long>(fail_n),
                          task.peer_id.c_str());
           }
-          // Per CLAUDE.md rule 2: never block scheduling on cache
-          // liveness. Drop on the floor; the periodic sweep below
-          // re-pushes it on the next round / membership change.
+          // Never block scheduling on cache liveness. Drop on the floor; the
+          // periodic sweep re-pushes it on the next round / membership change.
         }
       }
     });
   }
 
-  // W11.1 — re-replication sweep thread. Drives DrainReReplication on a
-  // fixed cadence so a re-replication round larger than one batch fully
-  // drains across successive ticks (Finding B fix). This is the "next
-  // eviction-loop tick" the W8 TriggerReReplication comment promised —
-  // realized here as a dedicated low-frequency Replicator-owned timer
-  // rather than wiring the Evictor: it keeps re-replication self-contained
-  // (no Evictor->Replicator dependency), and its lifetime is trivially
-  // correct (joined in ~Replicator, while store_/router_/transport_ — all
-  // declared before replicator_ in cache.hpp — are still alive). It is a
-  // no-op (one mutex acquire + bool check) whenever no round is active.
+  // Re-replication sweep thread. Drives DrainReReplication on a fixed cadence
+  // so a re-replication round larger than one batch fully drains across
+  // successive ticks. A dedicated low-frequency Replicator-owned timer keeps
+  // re-replication self-contained (no Evictor->Replicator dependency), and its
+  // lifetime is trivially correct (joined in ~Replicator, while
+  // store_/router_/transport_ — all declared before replicator_ in cache.hpp —
+  // are still alive). It is a no-op (one mutex acquire + bool check) whenever
+  // no round is active.
   raw->sweep_thread = std::thread([this, raw]() {
     using namespace std::chrono_literals;
     while (raw->running.load(std::memory_order_acquire)) {
@@ -283,8 +261,8 @@ Replicator::~Replicator() {
   for (auto& w : state->workers) {
     if (w.joinable()) w.join();
   }
-  // W11.1: stop the re-replication sweep before the pool is torn down.
-  // `running` is already false above; the sweep checks it each 50ms slice.
+  // Stop the re-replication sweep before the pool is torn down. `running` is
+  // already false above; the sweep checks it each 50ms slice.
   if (state->sweep_thread.joinable()) state->sweep_thread.join();
   auto& reg = pool_registry();
   std::lock_guard<std::mutex> g(reg.mu);
@@ -378,25 +356,17 @@ std::optional<KvBlock> Replicator::FetchFromAny(
 
 void Replicator::TriggerReReplication(
     const std::vector<std::string>& lost_peers) {
-  // Called by Membership::OnMembershipChange after a peer is declared
-  // dead (and after Router::SetPeers has installed the new ring). We
-  // build the FULL candidate set — every block this node holds and is
-  // in-route for under the new ring — and hand it to the sweep as a
-  // "re-replication round." DrainReReplication then dispatches it in
-  // bounded, queue-back-pressured batches across successive sweep ticks
-  // until the cursor reaches the end.
+  // Called by Membership::OnMembershipChange after a peer is declared dead
+  // (and after Router::SetPeers has installed the new ring). We build the FULL
+  // candidate set — every block this node holds and is in-route for under the
+  // new ring — and hand it to the sweep as a "re-replication round."
+  // DrainReReplication then dispatches it in bounded, queue-back-pressured
+  // batches across successive sweep ticks until the cursor reaches the end.
   //
-  // W11.1 (Finding B fix): the W8 version dispatched at most kBoundedScan
-  // (256) blocks in ONE pass and nothing ever re-triggered — its comment
-  // claimed the remainder was "picked up on the next eviction-loop tick,"
-  // but the Evictor never called back, so a working set > 256 blocks per
-  // node stayed under-replicated forever under a single permanent death.
-  // The round + sweep makes that comment true: every candidate is covered.
-  //
-  // Idempotent: the receiver's Insert dedups on BlockId, so re-pushing a
-  // block a peer already has is a no-op — safe to over-include (we don't
-  // know which blocks a surviving peer is missing without an ACK channel;
-  // see the deferred-optimization note in docs/DECISIONS.md).
+  // Idempotent: the receiver's Insert dedups on BlockId, so re-pushing a block
+  // a peer already has is a no-op — safe to over-include (we don't know which
+  // blocks a surviving peer is missing without an ACK channel; see the
+  // deferred-optimization note in docs/DECISIONS.md).
   if (router_ == nullptr || transport_ == nullptr || store_ == nullptr) {
     if (DebugRerepEnabled()) {
       std::fprintf(stderr, "[lethe %s] TriggerReReplication: nullptr dep; skipping\n",
@@ -445,9 +415,8 @@ void Replicator::TriggerReReplication(
     std::fprintf(stderr, "[lethe %s] TriggerReReplication: round=%zu (lost=%zu)\n",
                  local_node_id_.c_str(), round_size, lost_peers.size());
   }
-  // Live deficit gauge (W10 metric fix — was previously set to the
-  // dispatched count and never reset; now it is the count still pending
-  // and DrainReReplication zeroes it on completion).
+  // Live deficit gauge: the count still pending, zeroed by DrainReReplication
+  // on completion.
   if (metrics_ != nullptr) {
     metrics_->RecordUnderReplicated(round_size);
   }
@@ -472,10 +441,9 @@ void Replicator::DrainReReplication() {
     const BlockId id = state->rerep_round[state->rerep_cursor];
     const auto route = router_->Route(id);
 
-    // FULL target set = every route member except self (same rule W8
-    // established: a surviving replica may be the only holder of a block
-    // whose new primary lacks it, so pushing only to replicas would never
-    // converge the primary).
+    // FULL target set = every route member except self: a surviving replica
+    // may be the only holder of a block whose new primary lacks it, so
+    // pushing only to replicas would never converge the primary.
     std::vector<std::string> targets;
     if (!route.primary.empty() && route.primary != local_node_id_) {
       targets.push_back(route.primary);
@@ -521,12 +489,11 @@ void Replicator::DrainReReplication() {
   const std::size_t remaining =
       state->rerep_round.size() - state->rerep_cursor;
   if (state->rerep_cursor >= state->rerep_round.size()) {
-    // Round complete — every candidate dispatched. Zero the deficit gauge
-    // and record the dispatch-completion time (W10 metric fix: this is the
-    // first call site for lethe_failover_recovery_seconds; it measures
-    // detection→full-dispatch, the locally-observable recovery signal —
-    // ACK-confirmed R=2 lags by the queue drain, which the chaos suite
-    // measures behaviorally).
+    // Round complete — every candidate dispatched. Zero the deficit gauge and
+    // record the dispatch-completion time: this feeds
+    // lethe_failover_recovery_seconds, measuring detection→full-dispatch, the
+    // locally-observable recovery signal — ACK-confirmed R=2 lags by the queue
+    // drain, which the chaos suite measures behaviorally.
     state->rerep_active = false;
     if (metrics_ != nullptr) {
       metrics_->RecordUnderReplicated(0);

@@ -1,4 +1,4 @@
-"""Integration: failover correctness (W8/W11)."""
+"""Integration: failover correctness."""
 from __future__ import annotations
 import pytest
 

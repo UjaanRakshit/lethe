@@ -1,8 +1,7 @@
 #pragma once
-// Lethe — single-tier block store. Owns the actual KV bytes for blocks
-// resident in one storage tier and provides thread-safe get/put/erase.
-//
-// W1: implemented. W7 (tiered_store.hpp) composes three of these.
+// Single-tier block store. Owns the actual KV bytes for blocks resident in
+// one storage tier and provides thread-safe get/put/erase. TieredStore
+// composes three of these.
 
 #include <atomic>
 #include <cstddef>

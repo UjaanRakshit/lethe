@@ -1,4 +1,4 @@
-// Lethe — Metrics unit test (W10).
+// Metrics unit test.
 //
 // Standalone main()-with-asserts. Drives the Metrics class directly via
 // the Record* methods and scrape_for_testing() (the same exposition the

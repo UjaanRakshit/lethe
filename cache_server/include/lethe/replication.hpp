@@ -1,10 +1,10 @@
 #pragma once
-// Lethe — replication and read-repair (W4).
+// Replication and read-repair.
 //
 // On Insert, the owner streams the block to its R-1 replica successors on
-// the consistent hash ring. On Lookup miss at the local node, we consult
-// the router for replica peers and issue parallel StreamBlocks pulls; if
-// any returns the block, we repair our local copy (read-repair).
+// the consistent hash ring. On a local Lookup miss, we consult the router
+// for replica peers and issue parallel StreamBlocks pulls; if any returns
+// the block, we repair our local copy (read-repair).
 
 #include <optional>
 #include <string>
@@ -21,10 +21,10 @@ class Metrics;
 
 class Replicator {
  public:
-  // W5-6: transport may be null for tests / single-node bring-up that
-  // don't exercise replication. When null, ReplicateOut returns an
-  // empty list and FetchFromAny returns nullopt without any RPC.
-  // W10: metrics may be null (tests); Record* calls are guarded.
+  // transport may be null for tests / single-node bring-up that don't
+  // exercise replication. When null, ReplicateOut returns an empty list and
+  // FetchFromAny returns nullopt without any RPC. metrics may also be null
+  // (tests); Record* calls are guarded.
   Replicator(std::string local_node_id,
              Router* router,
              TieredStore* store,
@@ -34,9 +34,8 @@ class Replicator {
 
   // Push a block to all replica successors. Called from Insert after the
   // local tier write succeeds. Returns the list of peers the push was
-  // QUEUED to (not ACKed; the W4 async-replication policy is
-  // fire-and-forget — see docs/DECISIONS.md "Async replication policy
-  // realized").
+  // QUEUED to (not ACKed; async replication is fire-and-forget — see
+  // docs/DECISIONS.md "Async replication policy realized").
   std::vector<std::string> ReplicateOut(const KvBlock& block);
 
   // Attempt to fetch a block from any of the named replica peers. Returns
@@ -46,7 +45,7 @@ class Replicator {
                                       const std::vector<std::string>& peers);
 
   // Re-replicate blocks owned-but-under-replicated after a peer is suspected
-  // dead. Called by Membership on cluster epoch change (W8).
+  // dead. Called by Membership on cluster epoch change.
   void TriggerReReplication(const std::vector<std::string>& lost_peers);
 
   // Connection pool management. Delegates to the underlying KvTransport
@@ -59,12 +58,11 @@ class Replicator {
   void DropPeerClient(const std::string& peer_id);
 
  private:
-  // W11.1: dispatch the next bounded batch of the in-progress
-  // re-replication round (populated by TriggerReReplication). Driven on a
-  // cadence by an internal sweep thread so a working set larger than one
-  // batch fully reconverges across successive ticks — Finding B fix. Also
-  // called once inline by TriggerReReplication for a fast first batch.
-  // No-op when no round is active.
+  // Dispatch the next bounded batch of the in-progress re-replication round
+  // (populated by TriggerReReplication). Driven on a cadence by an internal
+  // sweep thread so a working set larger than one batch fully reconverges
+  // across successive ticks. Also called once inline by TriggerReReplication
+  // for a fast first batch. No-op when no round is active.
   void DrainReReplication();
 
   std::string local_node_id_;

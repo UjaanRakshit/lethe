@@ -1,5 +1,5 @@
 #pragma once
-// Lethe — prefix-aware consistent hashing router (W3).
+// Prefix-aware consistent hashing router.
 //
 // Each peer is mapped to V virtual nodes on a 64-bit hash ring. To resolve a
 // block: hash the block's content hash and walk the ring to find the owner.
@@ -7,7 +7,7 @@
 // identical block IDs for the first k blocks and route to the same node,
 // which is the entire point.
 //
-// Membership changes (W8) trigger ring rebuild; we keep the rebuild cheap by
+// Membership changes trigger a ring rebuild; the rebuild is kept cheap by
 // using a sorted std::vector<std::pair<uint64_t, peer_idx>> rather than a tree.
 
 #include <cstdint>

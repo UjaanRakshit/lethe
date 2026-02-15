@@ -10,11 +10,8 @@ Heartbeat RPC, learns the current epoch + alive peer set, and atomically
 swaps the client's HashRing when the epoch changes. The poll interval
 intentionally matches `MembershipConfig::heartbeat_interval` (200ms) ×5
 so that worst-case staleness is one second — well inside the 3.5s
-recovery budget (CLAUDE.md "Architecture spine").
-
-W3 wires this in; W8 makes it failure-aware (skip unreachable peers,
-back off on repeated failures). W11 chaos tests assert that the client's
-ring converges within `dead_after + 1s` after a node kill.
+recovery budget. The poll is failure-aware: it skips unreachable peers
+and falls back through alive → known → seed candidates.
 """
 
 from __future__ import annotations

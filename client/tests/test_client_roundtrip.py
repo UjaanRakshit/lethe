@@ -1,4 +1,4 @@
-"""W1.2 integration test: byte-identical roundtrip through a running
+"""Integration test: byte-identical roundtrip through a running
 lethe_server.
 
 This test spawns a real lethe_server binary as a subprocess on a
@@ -11,15 +11,13 @@ and verifies:
   * Distinct BlockIds produce distinct stored content (no aliasing).
   * Independence-from-mutation: Insert → Fetch (capture bytes B1) →
     Insert a different block → Fetch the first id again (B2) → assert
-    B1 == B2 == payload. Pre-W7 this exercised the borrowed-span
-    lifetime contract; post-W7 LookupResult::Entry::local_data owns
-    its bytes outright and Fetch always returns a fresh copy, so the
-    test is a trivially-satisfied invariant — kept as a regression
-    guard against any future change that re-introduces borrows on
-    the response path.
+    B1 == B2 == payload. LookupResult::Entry::local_data owns its bytes
+    outright and Fetch always returns a fresh copy, so this is a
+    trivially-satisfied invariant — kept as a regression guard against
+    any future change that re-introduces borrows on the response path.
 
 Skips when the lethe_server binary can't be found — the build can't
-be exercised on this dev box (Protobuf / gRPC C++ not installed), but
+be exercised on every dev box (Protobuf / gRPC C++ not installed), but
 the test will run on any properly-equipped CI node.
 """
 
@@ -117,7 +115,7 @@ def server():
 
 def _make_block_id(seed: int, layer: int = 0):
     """Deterministic 32-byte hash from a seed; uses SHA-256 here only
-    as a uniqueness source — content hashing in production goes via
+    as a uniqueness source — real content hashing goes via
     `lethe_client.routing.chained_block_hash` (BLAKE3)."""
     from lethe_client.client import BlockId
     return BlockId(
@@ -171,9 +169,9 @@ def test_insert_lookup_roundtrip(server):
 
 def test_distinct_ids_distinct_content(server):
     """Aliasing check: BlockIds that differ ONLY in layer / head_group /
-    model_id are stored as distinct entries with distinct content. Per
-    the W0 routing rule, those fields disambiguate the in-memory map
-    even though they don't enter the routing hash."""
+    model_id are stored as distinct entries with distinct content. Those
+    fields disambiguate the in-memory map even though they don't enter
+    the routing hash."""
     from lethe_client.client import LetheClient
 
     with LetheClient(primary_address=server) as client:
@@ -208,19 +206,18 @@ def test_lookup_miss(server):
 
 def test_local_data_lifetime_contract_via_grpc(server):
     """Server-side Fetch returns immutable byte copies, not a span the
-    client could dereference past a subsequent mutation. Pre-W7 this
-    test guarded the borrowed-span lifetime contract; post-W7
-    LookupResult::Entry::local_data is an owned vector and Fetch
-    always copies the bytes onto the wire, so the test is trivially
-    satisfied. Kept as a regression guard against a future change
-    that re-introduces borrows on the response path.
+    client could dereference past a subsequent mutation.
+    LookupResult::Entry::local_data is an owned vector and Fetch always
+    copies the bytes onto the wire, so the test is trivially satisfied.
+    Kept as a regression guard against a future change that re-introduces
+    borrows on the response path.
 
     Test scenario:
       1. Insert block X with payload P.
       2. Fetch X → capture bytes B1.
       3. Insert a DIFFERENT block Y (no aliasing with X). This is the
-         most-mutating operation the W1 API exposes; with Erase /
-         eviction the test would be sharper, but neither is W1 work.
+         most-mutating operation the current API exposes; with Erase /
+         eviction the test would be sharper.
       4. Fetch X again → bytes B2.
       5. Assert B1 == B2 == P.
     """

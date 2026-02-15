@@ -1,8 +1,8 @@
-"""W1.4 pre-flight: save → wire → load is byte-identical.
+"""Pre-flight: save → wire → load is byte-identical.
 
 Runs before the GPU-driven three-way control test. If this fails, the
-three-way control will also fail — running this first saves the
-debugging time of "is it serialization or is it the engine?".
+three-way control will also fail — running this first answers "is it
+serialization or is it the engine?" cheaply.
 
 Two scenarios, in increasing scope:
   1. Pure helper roundtrip: `_tensor_to_bytes(_bytes_to_tensor(...))`
@@ -17,10 +17,9 @@ The load-side inject is deliberately NOT exercised here because
 ``wait_for_layer_load`` needs a real ``forward_context.no_compile_layers``
 to find the layer object — that's available only from inside a real
 vLLM engine forward, which is the three-way control test's surface.
-For W1.4 pre-flight, "fetch returns the exact bytes we saved" is the
-load-side correctness signal: ``_bytes_to_tensor`` is unit-tested in
-scenario 1, so save+fetch+deserialize is a complete byte-identical
-chain.
+"fetch returns the exact bytes we saved" is the load-side correctness
+signal: ``_bytes_to_tensor`` is unit-tested in scenario 1, so
+save+fetch+deserialize is a complete byte-identical chain.
 """
 
 from __future__ import annotations
@@ -183,7 +182,7 @@ def test_save_via_connector_then_fetch_is_byte_identical(server):
     control's surface (needs a real forward_context). What this test
     proves: the save path's per-block extract + serialize + Insert
     chain produces bytes that round-trip exactly through the cache
-    server when read back via the documented Fetch RPC.
+    server when read back via the Fetch RPC.
     """
     from lethe_client.client import BlockId, LetheClient
     from lethe_client.routing import chained_block_hash
@@ -222,13 +221,13 @@ def test_save_via_connector_then_fetch_is_byte_identical(server):
         )
     ]
 
-    # Bind, save, wait. Drives the actual W1.4 save path.
+    # Bind, save, wait. Drives the actual save path.
     connector.bind_connector_metadata(metadata)
     try:
         connector.save_kv_layer(
             layer_name=layer_name,
             kv_layer=kv_layer,
-            attn_metadata=None,  # save_kv_layer doesn't read attn_metadata in W1
+            attn_metadata=None,  # save_kv_layer doesn't read attn_metadata
         )
         connector.wait_for_save()
     finally:

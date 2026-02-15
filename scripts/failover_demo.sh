@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Lethe failover demo (W12.1) — the "hit rate survives a node kill" money shot,
-# made visual on Grafana. This is W11's INV-5 driven against the live cluster.
+# Lethe failover demo — the "hit rate survives a node kill" money shot, made
+# visual on Grafana. This is INV-5 driven against the live cluster.
 #
 # It reuses the chaos harness (chaos/invariants.py, scenario=sigkill): it
 # inserts a corpus at R=2, hard-kills one node, and samples the ring-routed

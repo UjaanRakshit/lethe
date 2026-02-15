@@ -1,36 +1,33 @@
-// Lethe — IbverbsTransport (compiled only when LETHE_ENABLE_RDMA=ON).
+// IbverbsTransport (compiled only when LETHE_ENABLE_RDMA=ON). Implementation
+// against InfiniBand verbs (ICE ConnectX-7).
 //
-// W12.2: real implementation against InfiniBand verbs (PACE ICE, ConnectX-7).
-// Replaces the W5-6 abort-stub now that real IB hardware is available.
-//
-// Wire model (deliberately the simplest correct shape under the 6h time box):
+// Wire model (simplest correct shape):
 //   * Send  → two-sided RDMA SEND/RECV. The push path (replication +
-//             re-replication + prefill→decode) is the throughput-critical
-//             path, so it gets RDMA. The sender copies [MsgHeader|payload]
-//             into a registered buffer and ibv_post_send; the receiver's
-//             pre-posted RECV completes, we parse the header and hand the
-//             bytes to on_receive() (which cache.cpp wires to LetheCache).
+//             re-replication + prefill→decode) is throughput-critical, so it
+//             gets RDMA. The sender copies [MsgHeader|payload] into a
+//             registered buffer and ibv_post_send; the receiver's pre-posted
+//             RECV completes, we parse the header and hand the bytes to
+//             on_receive() (wired to LetheCache in cache.cpp).
 //   * Fetch → delegated to an internal GrpcStreamTransport. Read-repair pull
 //             is occasional, and answering a fetch over RDMA would need the
 //             block store inside the transport (it isn't here). Reusing the
 //             tested gRPC Fetch keeps correctness without duplicating proto
-//             code. The RDMA win is on Send, which is what Phase 3 measures.
+//             code; the RDMA win is on Send.
 //
-// Connection: rdma_cm (librdmacm). IPoIB is present on PACE, so
+// Connection: rdma_cm (librdmacm). IPoIB is present, so
 // rdma_resolve_addr/route derive the IB path/GID/MTU for us — far less
-// silent-hang surface than a hand-built QP state machine on InfiniBand.
-// Each node listens (rdma_listen) and accepts inbound connections (one
-// accepted QP per peer, used to RECV that peer's Sends), and dials each peer
-// (one outbound QP per peer, used to SEND to it). One completion-polling
-// thread per connection (CLAUDE.md threading invariant).
+// silent-hang surface than a hand-built QP state machine. Each node listens
+// (rdma_listen) and accepts inbound connections (one accepted QP per peer for
+// RECV), and dials each peer (one outbound QP per peer for SEND). One
+// completion-polling thread per connection.
 //
-// Addressing: rdma_cm needs IB-fabric IPs (ib0), not the management
-// hostnames the gRPC control plane uses. Endpoints come from env:
+// Addressing: rdma_cm needs IB-fabric IPs (ib0), not the management hostnames
+// the gRPC control plane uses. Endpoints come from env:
 //   LETHE_RDMA_LISTEN = "<ib0_ip>:<port>"            (this node)
 //   LETHE_RDMA_PEERS  = "id@<ib0_ip>:<port>,..."     (peers)
-// set by the launch scripts. Connect(peer_id, grpc_addr) ignores grpc_addr
-// for the RDMA path and looks peer_id up in the env map (it still forwards
-// to the gRPC fallback for Fetch).
+// set by the launch scripts. Connect(peer_id, grpc_addr) ignores grpc_addr for
+// the RDMA path and looks peer_id up in the env map (it still forwards to the
+// gRPC fallback for Fetch).
 
 #include "lethe/kv_transport.hpp"
 
@@ -164,7 +161,7 @@ struct IbverbsTransport::Impl {
   std::thread listen_thread;
   std::atomic<bool> stop{false};
 
-  // Diagnostics (W12.2 bring-up): dumped on Shutdown.
+  // Diagnostics, dumped on Shutdown.
   std::atomic<std::uint64_t> n_posted{0}, n_done_ok{0}, n_done_err{0};
   std::atomic<std::uint64_t> n_drop_noconn{0}, n_drop_bp{0}, n_recv{0};
 

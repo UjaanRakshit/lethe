@@ -1,6 +1,4 @@
-// Lethe — TieredStore + SsdBlockStore unit tests (W7).
-//
-// Standalone main with assert()s, per tests/CMakeLists.txt convention.
+// TieredStore + SsdBlockStore unit tests. Standalone main with assert()s.
 //
 // Coverage map:
 //   - Two-tier (hbm=0, dram>0, ssd=0): Put/Get/Erase round-trip.
@@ -9,14 +7,11 @@
 //     blocks move and the cold copy is dropped.
 //   - Demotion: explicit Demote moves DRAM → SSD; SSD demote returns
 //     false (no slower tier).
-//   - Erase wipes access_counts_: re-Insert starts the access count
-//     over (the W0 invariant we backfilled into the implementation).
-//   - SSD persistence ACROSS PROCESS RESTART: this is THE W7 acceptance
-//     check. We write a block, destroy the TieredStore (closing the
-//     mmap), reconstruct with the same path, and verify the block is
-//     still readable. Same shape as a process kill + restart, minus
-//     the actual fork — close+mmap+open is the relevant boundary the
-//     SsdBlockStore claims to survive.
+//   - Erase wipes access_counts_: re-Insert starts the access count over.
+//   - SSD persistence across process restart: write a block, destroy the
+//     TieredStore (closing the mmap), reconstruct with the same path, and
+//     verify the block is still readable. close+mmap+open is the boundary
+//     the SsdBlockStore claims to survive, minus the actual fork.
 
 #include <cassert>
 #include <cstdio>
@@ -224,9 +219,8 @@ void TestEraseWipesAccessCounts() {
 }
 
 void TestSsdPersistenceAcrossDestruct() {
-  // THE W7 acceptance test. Write a block, drop the TieredStore (which
-  // closes the mmap), recreate against the same file, read the block
-  // back.
+  // Write a block, drop the TieredStore (which closes the mmap), recreate
+  // against the same file, read the block back.
   auto dir = MakeTempDir("persistence");
   TieredStoreConfig cfg;
   cfg.dram_bytes = 0;                  // force SSD path

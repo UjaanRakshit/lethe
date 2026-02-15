@@ -1,8 +1,6 @@
-// Lethe — hash compatibility driver (W3).
-//
-// Cross-language equivalence harness for chained_block_hash. Reads
-// lines from stdin in either of two formats and prints the resulting
-// 32-byte BLAKE3 digest as 64-character lowercase hex per line.
+// Hash compatibility driver — cross-language equivalence harness for
+// chained_block_hash. Reads lines from stdin in either of two formats and
+// prints the resulting 32-byte BLAKE3 digest as 64-char lowercase hex.
 //
 // Modes:
 //   default      — each line: "<prev_hash_hex> <token_id> <token_id> ..."
@@ -14,15 +12,10 @@
 //                  mirrors lethe_client.routing.HashRing's per-vnode
 //                  digest. Used by the cross-language ring-key test.
 //
-// Used by tests/correctness/test_hash_compat.py via subprocess. The
-// W0 invariant requires bit-equal output between this driver and the
-// Python reference.
-//
-// Build: see cache_server/CMakeLists.txt → add_executable
-// hash_compat_driver. The binary lands at
-// build/cache_server/hash_compat_driver and the Python test looks for
-// it at build/tests/hash_compat_driver — symlinked at runtime by
-// tests/CMakeLists.txt or copied during the build.
+// Used by tests/correctness/test_hash_compat.py via subprocess; output
+// must stay bit-equal with the Python reference. The binary lands at
+// build/cache_server/hash_compat_driver and the Python test finds it at
+// build/tests/hash_compat_driver (symlinked or copied during the build).
 
 #include <array>
 #include <cstdint>

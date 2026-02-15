@@ -1,22 +1,20 @@
-// Lethe — tiered storage (W7).
+// Tiered storage.
 //
 // Composes HBM + DRAM (in-memory BlockStore) + SSD (SsdBlockStore,
 // mmap-backed). Tier-aware Get/Put/Demote/Erase. Promotion on Get when
-// access_counts_[id] crosses the configured threshold AND the faster
-// tier has space (best-effort — no eviction triggering from here; W8's
-// Evictor handles capacity pressure).
+// access_counts_[id] crosses the configured threshold AND the faster tier has
+// space (best-effort — no eviction triggering from here; the Evictor handles
+// capacity pressure).
 //
 // Threading: access_counts_ has its own shared_mutex. Each underlying
-// BlockStore / SsdBlockStore manages its own mutex. We never hold two
-// of these at once.
+// BlockStore / SsdBlockStore manages its own mutex. We never hold two of these
+// at once.
 //
-// Why HBM uses plain BlockStore in the default build:
-//   The W0 design says the HBM tier is pinned-host memory unless
-//   LETHE_ENABLE_CUDA=ON pulls in cudaMalloc. For W7 we don't have CUDA
-//   wired; the default-build HBM is therefore "fast in-memory tier
-//   logically, regular heap physically." Benchmarks tag this as
-//   `HBM=pinned-host` per the DESIGN.md note so the number isn't
-//   misrepresented.
+// Why HBM uses plain BlockStore in the default build: the HBM tier is
+// pinned-host memory unless LETHE_ENABLE_CUDA=ON pulls in cudaMalloc. With CUDA
+// unwired, the default-build HBM is a fast in-memory tier logically but regular
+// heap physically. Benchmarks tag this as `HBM=pinned-host` per the DESIGN.md
+// note so the number isn't misrepresented.
 
 #include "lethe/tiered_store.hpp"
 
@@ -29,16 +27,15 @@ namespace lethe {
 
 TieredStore::TieredStore(TieredStoreConfig cfg) : cfg_(std::move(cfg)) {
   // HBM: only constructed if non-zero capacity. The "pinned host vs
-  // cudaMalloc" switch lives in the BlockStore allocator at the
-  // LETHE_ENABLE_CUDA=ON path — not in W7 scope.
+  // cudaMalloc" switch lives in the BlockStore allocator behind
+  // LETHE_ENABLE_CUDA=ON.
   if (cfg_.hbm_bytes > 0) {
     hbm_ = std::make_unique<BlockStore>(Tier::HBM, cfg_.hbm_bytes);
   }
   // DRAM is the always-on tier; the cache makes no sense without it.
   dram_ = std::make_unique<BlockStore>(Tier::DRAM, cfg_.dram_bytes);
-  // SSD: only constructed if non-zero capacity AND a path is set. The
-  // single-node W1.4 + W4 unit tests run with ssd_bytes=0; they go
-  // through this path unchanged.
+  // SSD: only constructed if non-zero capacity AND a path is set. Single-node
+  // unit tests run with ssd_bytes=0 and go through this path unchanged.
   if (cfg_.ssd_bytes > 0 && !cfg_.ssd_path.empty()) {
     std::filesystem::path file = std::filesystem::path(cfg_.ssd_path);
     // Append a stable filename so a single ssd_path can host the data
@@ -121,7 +118,7 @@ std::optional<GetResult> TieredStore::Get(const BlockId& id) {
   // Promote on the leading edge: when count >= threshold AND we're not
   // already at HBM AND the faster tier has space. Best-effort — if the
   // faster tier's Put returns false (capacity exhausted), we leave the
-  // block where it is. W8's eviction will eventually free space.
+  // block where it is. Eviction will eventually free space.
   if (cfg_.enable_promotion &&
       count >= cfg_.promotion_access_threshold &&
       found != Tier::HBM) {
@@ -231,9 +228,9 @@ std::size_t TieredStore::Erase(const BlockId& id) {
   if (hbm_)  freed += hbm_->Erase(id);
   if (dram_) freed += dram_->Erase(id);
   if (ssd_)  freed += ssd_->Erase(id);
-  // Wipe per-block bookkeeping so a re-Insert behaves as a fresh block,
-  // per the W0 contract. Both access_counts_ and the SIEVE visited
-  // bit live under counts_mu_; one lock acquisition wipes both.
+  // Wipe per-block bookkeeping so a re-Insert behaves as a fresh block. Both
+  // access_counts_ and the SIEVE visited bit live under counts_mu_; one lock
+  // acquisition wipes both.
   {
     std::unique_lock<std::shared_mutex> lock(counts_mu_);
     access_counts_.erase(id);
@@ -267,9 +264,9 @@ std::vector<BlockMeta> TieredStore::Snapshot(Tier t) const {
     case Tier::DRAM: out = dram_ ? dram_->Snapshot() : std::vector<BlockMeta>{}; break;
     case Tier::SSD:  out = ssd_  ? ssd_->Snapshot()  : std::vector<BlockMeta>{}; break;
   }
-  // Overlay the W8 SIEVE visited bit. The underlying BlockStore
-  // doesn't know about visited; we paint it here so Evictor consumers
-  // see a unified BlockMeta.
+  // Overlay the SIEVE visited bit. The underlying BlockStore doesn't know
+  // about visited; we paint it here so Evictor consumers see a unified
+  // BlockMeta.
   if (!out.empty()) {
     std::shared_lock<std::shared_mutex> lock(counts_mu_);
     for (auto& m : out) {

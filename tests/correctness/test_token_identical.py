@@ -1,11 +1,10 @@
-"""W1 acceptance gate: cache-equivalence control on Gemma-3-1B
-(rule-2 reframed at W9).
+"""Cache-equivalence control on Gemma-3-1B.
 
-Per CLAUDE.md rule 2, the claim is NOT bit-identical across the
-cache-hit/cache-miss boundary (attention FP reductions are
-non-associative on GPU). The claim IS: given the same set of cache
-hits vs misses, Lethe + vLLM produces the same tokens as vLLM serving
-those same hits via its native prefix cache.
+The claim is NOT bit-identical across the cache-hit/cache-miss boundary
+(attention FP reductions are non-associative on GPU). The claim IS:
+given the same set of cache hits vs misses, Lethe + vLLM produces the
+same tokens as vLLM serving those same hits via its native prefix
+cache.
 
 Four runs (separate subprocesses so process-global engine state can't
 leak between them); the lethe_server is shared between B and C:
@@ -18,27 +17,28 @@ leak between them); the lethe_server is shared between B and C:
 Gates:
   * STORE path (HARD): A == B. Both miss-side; the connector's save
     must not corrupt the computed result.
-  * LOAD path (INFORMATIONAL): C vs D logged, not asserted. W1.4's
-    separate-process model can't cleanly reproduce the rule-2
+  * LOAD path (INFORMATIONAL): C vs D logged, not asserted. This
+    separate-process model can't cleanly reproduce the
     apples-to-apples comparison — run C loads the prefix in a SINGLE
     fused generate (Lethe-hit) while run D warms its own cache in a
     SEPARATE generate then decodes (two-phase, native-hit). That
     generate-structure mismatch re-introduces FP drift on the
-    boundary-sensitive prompts (NOT a Lethe bug). The AUTHORITATIVE
-    load-path gate is W9's test_disagg_token_identical, which does the
+    boundary-sensitive prompts (NOT a Lethe bug). The authoritative
+    load-path gate is test_disagg_token_identical, which does the
     structurally-matched disagg-vs-native comparison (both two-phase,
-    same process) and passes 10/10.
+    same process).
 
 Why not assert A == C? That crosses the cache-hit/miss boundary and is
-EXPECTED to drift under FP non-associativity — rule 2 explicitly
-excludes it. (W9: disagg-vs-vanilla diverged on 3/10 prompts at late
-token positions, while disagg-vs-native matched on all 10.)
+EXPECTED to drift under FP non-associativity. (disagg-vs-vanilla
+diverges on a few prompts at late token positions, while
+disagg-vs-native matches on all of them.)
 
-History: before W9's presence-marker fix, the connector's LOAD path
-never fired (the scheduler probed Lethe with layer=0 while save stored
-under per-layer ids), so runs B and C were both miss-side recomputes
-and A==B==C passed as a FALSE GREEN. W9's hit-count gate surfaced it;
-this reframe makes W1.4 genuinely exercise the load path.
+History: an earlier presence-marker bug meant the connector's LOAD
+path never fired (the scheduler probed Lethe with layer=0 while save
+stored under per-layer ids), so runs B and C were both miss-side
+recomputes and A==B==C passed as a FALSE GREEN. The hit-count gate in
+test_disagg_token_identical surfaced it; this setup genuinely
+exercises the load path.
 
 Diagnostics dumped to tests/correctness/w1_4_results.json regardless
 of pass/fail.
@@ -106,13 +106,13 @@ pytestmark = [
     ),
     pytest.mark.skipif(
         not _HAS_CUDA,
-        reason="CUDA unavailable; W1.4 acceptance gate needs a GPU",
+        reason="CUDA unavailable; this test needs a GPU",
     ),
 ]
 
 
 def _run_child(mode: str, lethe_address: str | None = None) -> dict:
-    """Run the W1.4 child script as a subprocess and parse its JSON stdout."""
+    """Run the child script as a subprocess and parse its JSON stdout."""
     cmd = [sys.executable, str(CHILD_SCRIPT), "--mode", mode]
     if lethe_address:
         cmd += ["--lethe-address", lethe_address]
@@ -198,9 +198,9 @@ def test_token_identical_three_way_control():
         }
 
         # Run C: connector + SAME lethe_server, now warm. The connector
-        # LOADS P's KV from Lethe — cache-HIT side. (Before the W9
-        # presence-marker fix this load never fired; W1.4 was a false
-        # green comparing three miss-side recomputes.)
+        # LOADS P's KV from Lethe — cache-HIT side. (Before the
+        # presence-marker fix this load never fired; the test was a
+        # false green comparing three miss-side recomputes.)
         print(f"=== run C (connector warm @ {addr}, LOADS from Lethe) ===",
               flush=True)
         run_c = _run_child("connector", lethe_address=addr)
@@ -209,13 +209,12 @@ def test_token_identical_three_way_control():
         }
 
         # Run D: native vLLM prefix cache, warmed. Cache-HIT side via
-        # vLLM's OWN cache. C==D is the rule-2 gate: KV served by Lethe
-        # must equal KV served by the native cache on the SAME hit
-        # schedule. (Comparing C against vanilla A would cross the
-        # cache-hit/miss boundary, where CLAUDE.md rule 2 says output is
-        # NOT bit-identical — that boundary FP drift is real and
-        # expected; see docs/weekly/W9.md.)
-        print("=== run D (native prefix cache warm, rule-2 control) ===",
+        # vLLM's OWN cache. C==D is the gate: KV served by Lethe must
+        # equal KV served by the native cache on the SAME hit schedule.
+        # (Comparing C against vanilla A would cross the cache-hit/miss
+        # boundary, where output is NOT bit-identical — that boundary
+        # FP drift is real and expected.)
+        print("=== run D (native prefix cache warm, control) ===",
               flush=True)
         run_d = _run_child("native")
         diagnostics["runs"]["D_native_warm"] = {
@@ -278,23 +277,23 @@ def test_token_identical_three_way_control():
     )
 
     RESULTS_PATH.write_text(json.dumps(diagnostics, indent=2))
-    print(f"\nW1.4 diagnostics → {RESULTS_PATH}")
+    print(f"\ndiagnostics → {RESULTS_PATH}")
 
-    # LOAD gate is INFORMATIONAL here, not a hard fail. W1.4's process
-    # model can't cleanly reproduce the rule-2 apples-to-apples
-    # comparison: run C (connector) loads the prefix in a SINGLE fused
-    # generate (Lethe-hit), while run D (native) must warm its own cache
-    # in a SEPARATE generate then decode (two-phase, native-hit). That
+    # LOAD gate is INFORMATIONAL here, not a hard fail. This process
+    # model can't cleanly reproduce the apples-to-apples comparison:
+    # run C (connector) loads the prefix in a SINGLE fused generate
+    # (Lethe-hit), while run D (native) must warm its own cache in a
+    # SEPARATE generate then decode (two-phase, native-hit). That
     # generate-structure mismatch re-introduces non-associative-attention
     # FP drift on the boundary-sensitive prompts — NOT a Lethe bug.
-    # W9's test_disagg_token_identical does the structurally-matched
+    # test_disagg_token_identical does the structurally-matched
     # comparison (disagg vs native, both two-phase, same process) and is
-    # the AUTHORITATIVE load-path gate (passes 10/10). So here we only
-    # log C!=D; we do not fail on it.
+    # the authoritative load-path gate. So here we only log C!=D; we do
+    # not fail on it.
     if load_diverged:
-        print(f"[W1.4 INFO] load C!=D on prompts {load_diverged} "
+        print(f"[INFO] load C!=D on prompts {load_diverged} "
               f"(cache-boundary FP from C/D generate-structure mismatch; "
-              f"authoritative load gate is W9 test_disagg_token_identical). "
+              f"authoritative load gate is test_disagg_token_identical). "
               f"first_diff_CD per prompt: "
               f"{[(e['prompt_index'], e['first_diff_CD']) for e in per_prompt if not e['load_CD_match']]}")
 

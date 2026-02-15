@@ -1,37 +1,32 @@
 #pragma once
-// Lethe — tiered storage (W7).
-//
-// Composes three storage layers: HBM (tier 0), DRAM (tier 1), SSD
+// Tiered storage composing three layers: HBM (tier 0), DRAM (tier 1), SSD
 // (tier 2). HBM and DRAM use BlockStore (in-memory hashtable backed by
-// pinned-host or device memory). SSD uses SsdBlockStore (mmap-backed
-// slot allocator).
+// pinned-host or device memory); SSD uses SsdBlockStore (mmap-backed slot
+// allocator).
 //
-// On Get, blocks may be promoted to a faster tier; on eviction pressure,
+// On Get, blocks may be promoted to a faster tier; under eviction pressure,
 // demoted to a slower one before being dropped entirely.
 //
-// Tier selection on Put: tier_hint from the client is a request; the
-// store may override based on current pressure.
+// Tier selection on Put: tier_hint from the client is a request; the store
+// may override based on current pressure.
 //
-// HBM allocator strategy (W7-W12):
+// HBM allocator strategy:
 //   - Default build (no `LETHE_ENABLE_CUDA`): the HBM tier is backed by
 //     plain heap memory (the same BlockStore the DRAM tier uses). The
-//     fiction is paid for by the benchmark output, which MUST tag the
-//     result "HBM=pinned-host" so it isn't passed off as device-memory
-//     performance.
-//   - With `-DLETHE_ENABLE_CUDA=ON` (W12 stretch): the HBM BlockStore
-//     uses real device memory via `cudaMalloc` and zero-copy paths to
-//     vLLM's PagedAttention buffers. This is the goal but not the W7
-//     requirement.
+//     benchmark output MUST tag the result "HBM=pinned-host" so it isn't
+//     passed off as device-memory performance.
+//   - With `-DLETHE_ENABLE_CUDA=ON`: the HBM BlockStore uses real device
+//     memory via `cudaMalloc` and zero-copy paths to vLLM's PagedAttention
+//     buffers. The goal, but not required.
 //   - If `hbm_bytes == 0`, the tier is disabled entirely and the HBM
 //     BlockStore pointer is null.
 //
 // Lifetime contract: GetResult.data is OWNED bytes (a vector), not a
-// borrowed span. This is a W7 change from W1's span-lending design.
-// Reason: the SSD tier can't safely lend spans into mmap'd memory
-// across Erase/Put churn — the slot may be reused for an unrelated
-// block before the caller serializes the bytes. Making GetResult own
-// uniformly is the simplest invariant; the per-Get copy is one memcpy
-// of <= slot_bytes (default 64 KiB) and is negligible at our scale.
+// borrowed span. The SSD tier can't safely lend spans into mmap'd memory
+// across Erase/Put churn — the slot may be reused for an unrelated block
+// before the caller serializes the bytes. Uniform ownership is the simplest
+// invariant; the per-Get copy is one memcpy of <= slot_bytes (default
+// 64 KiB), negligible at our scale.
 
 #include <memory>
 #include <optional>
@@ -81,8 +76,8 @@ class TieredStore {
   // tier has space, returns nullopt.
   std::optional<Tier> Put(KvBlock block, Tier hint);
 
-  // Demotes the block to the next slower tier. Used by Evictor (W8)
-  // before drop. Returns true on success, false if already at SSD (caller
+  // Demotes the block to the next slower tier. Used by Evictor before
+  // drop. Returns true on success, false if already at SSD (caller
   // should drop), or if the next tier has no space (caller may try a
   // different victim or proceed to drop).
   bool Demote(const BlockId& id);
@@ -94,18 +89,18 @@ class TieredStore {
   std::size_t Erase(const BlockId& id);
 
   // Per-tier introspection for metrics + eviction decisions. Snapshot's
-  // BlockMeta carries the W8 SIEVE visited bit; the Evictor reads it
-  // on each scan pass.
+  // BlockMeta carries the SIEVE visited bit; the Evictor reads it on each
+  // scan pass.
   std::size_t used_bytes(Tier t) const;
   std::size_t capacity_bytes(Tier t) const;
   std::vector<BlockMeta> Snapshot(Tier t) const;
 
-  // W8 SIEVE support. visited_ is a single set of BlockIds the cache
-  // has seen recently; the Evictor's scan reads it via Snapshot (which
-  // overlays the bit onto each BlockMeta). MarkVisited fires from Get
-  // on every hit; ClearVisited fires from the Evictor when SIEVE gives
-  // a block a second chance. The visited entry is wiped on Erase per
-  // the same access_counts_ contract.
+  // SIEVE support. visited_ is a single set of BlockIds the cache has seen
+  // recently; the Evictor's scan reads it via Snapshot (which overlays the
+  // bit onto each BlockMeta). MarkVisited fires from Get on every hit;
+  // ClearVisited fires from the Evictor when SIEVE gives a block a second
+  // chance. The visited entry is wiped on Erase per the same access_counts_
+  // contract.
   void MarkVisited(const BlockId& id);
   void ClearVisited(const BlockId& id);
 
@@ -132,9 +127,9 @@ class TieredStore {
   // Per-block access counter, used for promotion decisions. Hashed in a
   // separate map to keep BlockStore lean.
   std::unordered_map<BlockId, std::uint32_t, BlockIdHash> access_counts_;
-  // W8: SIEVE visited bits. Same shared_mutex as access_counts_ —
-  // both are touched on every Get; one lock acquisition handles both.
-  // Membership in `visited_` ⇒ "visited bit set". Absence ⇒ cleared.
+  // SIEVE visited bits. Same shared_mutex as access_counts_ — both are
+  // touched on every Get, so one lock acquisition handles both. Membership
+  // in `visited_` ⇒ "visited bit set"; absence ⇒ cleared.
   std::unordered_set<BlockId, BlockIdHash> visited_;
   mutable std::shared_mutex counts_mu_;
 };

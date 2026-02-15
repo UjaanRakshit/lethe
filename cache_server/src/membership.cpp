@@ -1,38 +1,31 @@
-// Lethe — membership (W3-W8).
+// Membership — heartbeat-based failure detection over a static seed list.
 //
-// W3-W4 surface (per-peer last_seen_epoch through HeartbeatReply,
-// static seed list) carried forward intact. W8 adds:
+//   * Heartbeat thread: every cfg.heartbeat_interval (default 200ms), fan out
+//     Heartbeat RPCs to every known peer (alive AND not-self). Parallel via
+//     std::async per peer; per-RPC deadline equal to the heartbeat interval.
 //
-//   * Heartbeat thread: every cfg.heartbeat_interval (default 200ms),
-//     fan out Heartbeat RPCs to every known peer (alive AND not-self).
-//     Parallel via std::async per peer; per-RPC deadline equal to the
-//     heartbeat interval itself.
+//   * Failure detection: EvaluateSuspicions runs each tick. Peers whose
+//     last_seen is older than cfg.suspect_after (1s) become suspected; older
+//     than cfg.dead_after (3s) get removed from the alive set, the cluster
+//     epoch bumps, and OnMembershipChange fires.
 //
-//   * Failure detection: EvaluateSuspicions runs each tick. Peers
-//     whose last_seen is older than cfg.suspect_after (1s) become
-//     suspected; older than cfg.dead_after (3s) get removed from the
-//     alive set, the cluster epoch bumps, and OnMembershipChange
-//     fires.
+//   * OnMembershipChange: bumps epoch, calls Router::SetPeers with the new
+//     alive list, calls Replicator::TriggerReReplication with the just-died
+//     peer list so re-replication can scope work to blocks whose replicas
+//     just disappeared.
 //
-//   * OnMembershipChange: bumps epoch, calls Router::SetPeers with
-//     the new alive list, calls Replicator::TriggerReReplication
-//     with the just-died peer list so re-replication can scope the
-//     work to blocks whose replicas just disappeared.
+//   * Peer resurrection: a dead peer that sends a successful heartbeat (or
+//     replies to ours) transitions back to alive at the current epoch. Same
+//     OnMembershipChange path; lost_peers is empty in that direction.
 //
-//   * Peer resurrection: a dead peer that sends a successful
-//     heartbeat (or replies to ours) transitions back to alive at the
-//     current epoch. Same OnMembershipChange path; the lost_peers
-//     vector is empty in that direction.
+// Threading: ONE std::thread (member of the class). Per-tick RPC parallelism
+// uses std::async (one thread per active peer for the tick). The heartbeat
+// thread is deliberately separate from the gRPC server's worker pool —
+// heartbeat latency must not couple to RPC service load.
 //
-// Threading: ONE std::thread (member of the class). Per-tick RPC
-// parallelism uses std::async (one thread per active peer for the
-// duration of the tick). The W0 design explicitly separates the
-// heartbeat thread from the gRPC server's worker pool — heartbeat
-// latency must not be coupled to RPC service load.
-//
-// gRPC client stubs live in a TU-local registry keyed by Membership*
-// (same pImpl-via-registry pattern as Replicator / Evictor) to keep
-// gRPC types out of membership.hpp.
+// gRPC client stubs live in a TU-local registry keyed by Membership* (same
+// pImpl-via-registry pattern as Replicator / Evictor) to keep gRPC types out
+// of membership.hpp.
 
 #include "lethe/membership.hpp"
 
@@ -183,7 +176,7 @@ void Membership::HeartbeatLoop() {
 }
 
 // ---------------------------------------------------------------------------
-// Heartbeat fan-out (W8 client side)
+// Heartbeat fan-out (client side)
 // ---------------------------------------------------------------------------
 
 void Membership::SendHeartbeatsToAllPeers() {
@@ -224,10 +217,9 @@ void Membership::SendHeartbeatsToAllPeers() {
       ::lethe::rpc::HeartbeatRequest req;
       req.set_node_id(local_node_id_);
       req.set_epoch(epoch_at_send);
-      // known_peers / load fields stay default; W8 doesn't gossip the
-      // full peer view yet — that's W11 chaos work. The wire fields
-      // exist (proto/lethe.proto) so future additions don't need a
-      // proto bump.
+      // known_peers / load fields stay default; we don't gossip the full
+      // peer view yet. The wire fields exist (proto/lethe.proto) so future
+      // additions don't need a proto bump.
       ::lethe::rpc::HeartbeatResponse resp;
       grpc::ClientContext ctx;
       ctx.set_deadline(std::chrono::system_clock::now() +
@@ -312,8 +304,8 @@ void Membership::OnMembershipChange(
     const std::vector<std::string>& lost_peers) {
   // Bump epoch FIRST so any concurrent caller sees the new value.
   epoch_.fetch_add(1, std::memory_order_release);
-  // W10: surface the new epoch as a gauge (the dashboard's
-  // lethe_cluster_epoch panel — a jump signals a membership change).
+  // Surface the new epoch as a gauge (the dashboard's lethe_cluster_epoch
+  // panel — a jump signals a membership change).
   if (metrics_ != nullptr) {
     metrics_->RecordEpoch(epoch_.load(std::memory_order_relaxed));
   }
@@ -323,11 +315,11 @@ void Membership::OnMembershipChange(
   // own queue + worker pool). No lock holds across subsystem calls.
   //
   // CRITICAL: include the local node in the alive list passed to
-  // Router::SetPeers. peers_ stores only OTHER peers (main.cpp's
-  // --peers parser strips self), so iterating peers_ alone gives an
-  // incomplete ring — see the matching comment in cache.cpp's ctor.
-  // Without this, IsLocalPrimary/IsLocalReplica always return false
-  // and W8's re-replication heuristic dispatches zero blocks.
+  // Router::SetPeers. peers_ stores only OTHER peers (main.cpp's --peers
+  // parser strips self), so iterating peers_ alone gives an incomplete ring —
+  // see the matching comment in cache.cpp's ctor. Without this,
+  // IsLocalPrimary/IsLocalReplica always return false and the re-replication
+  // heuristic dispatches zero blocks.
   std::vector<std::string> alive_ids;
   {
     std::lock_guard<std::mutex> lock(mu_);
@@ -356,9 +348,8 @@ void Membership::OnMembershipChange(
 
 HeartbeatReply Membership::OnHeartbeat(const std::string& peer_id,
                                        std::uint64_t /*peer_epoch*/) {
-  // W8 still ignores the peer_epoch field for gossip-convergence
-  // purposes (that's a W11 chaos-suite refinement); we use it only as
-  // an opportunity to refresh the peer's last_seen.
+  // We ignore the peer_epoch field for gossip-convergence purposes; the
+  // heartbeat only serves to refresh the peer's last_seen.
   HeartbeatReply reply;
   bool resurrected = false;
   {
@@ -367,13 +358,12 @@ HeartbeatReply Membership::OnHeartbeat(const std::string& peer_id,
     auto [it, inserted] = peers_.try_emplace(peer_id);
     if (inserted) {
       it->second.node_id = peer_id;
-      // New peer joining IS a membership change; W8 fires it via the
-      // resurrected/lost paths below. We don't have its gRPC address
-      // here (the request's HeartbeatRequest schema doesn't carry
-      // address explicitly — only node_id). For W8 the static seed
-      // list provides addresses; new peers without prior seed entry
-      // can't be reached for outbound heartbeats until the seed list
-      // is reconfigured. Surface that limitation in logs.
+      // New peer joining IS a membership change, fired via the
+      // resurrected/lost paths below. We don't have its gRPC address here
+      // (HeartbeatRequest carries only node_id, not address). The static seed
+      // list provides addresses; new peers without a prior seed entry can't
+      // be reached for outbound heartbeats until the seed list is
+      // reconfigured. Surface that limitation in logs.
       std::cerr << "[lethe] heartbeat from unknown peer " << peer_id
                 << " (no seed entry; cannot send return heartbeats)\n";
     }
@@ -402,7 +392,7 @@ HeartbeatReply Membership::OnHeartbeat(const std::string& peer_id,
 }
 
 // ---------------------------------------------------------------------------
-// Read-side accessors (unchanged from W3-W4)
+// Read-side accessors
 // ---------------------------------------------------------------------------
 
 std::vector<std::string> Membership::AlivePeers() const {
@@ -421,7 +411,7 @@ std::vector<std::string> Membership::AllPeerAddresses() const {
   out.reserve(peers_.size());
   for (const auto& [_, info] : peers_) {
     if (info.address.empty()) continue;
-    if (!info.alive) continue;  // W8: only broadcast to alive peers
+    if (!info.alive) continue;  // only broadcast to alive peers
     out.push_back(info.address);
   }
   return out;

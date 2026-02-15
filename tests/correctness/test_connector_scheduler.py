@@ -1,11 +1,10 @@
-"""W1.3 acceptance: scheduler-side methods of LetheCacheConnector.
+"""Scheduler-side methods of LetheCacheConnector.
 
-Exercises ``get_num_new_matched_tokens`` (this commit) and
-``update_state_after_alloc`` + ``build_connector_meta`` (next commit)
-against a real lethe_server subprocess.
+Exercises ``get_num_new_matched_tokens``, ``update_state_after_alloc``,
+and ``build_connector_meta`` against a real lethe_server subprocess.
 
-Reuses the binary built by W1.2.6 verification at
-``build/cache_server/lethe_server``. Skips the whole module when:
+Reuses the binary at ``build/cache_server/lethe_server``. Skips the
+whole module when:
   - vllm is not installed (the .venv-vllm gate), or
   - the lethe_server binary hasn't been built.
 
@@ -147,7 +146,7 @@ def _make_connector(address: str, role: KVConnectorRole = KVConnectorRole.SCHEDU
 def _make_request(prompt_token_ids: list[int], request_id: str = "req-1") -> Request:
     """Construct a Request with the minimal fields the scheduler-side
     methods read (request_id, prompt_token_ids). Other fields use
-    sane defaults — we never invoke the full scheduling path here.
+    sane defaults — the full scheduling path is never invoked here.
     """
     return Request(
         request_id=request_id,
@@ -196,7 +195,7 @@ def _insert_blocks(client_address: str, hashes: list[bytes]) -> int:
 
 
 def test_scheduler_methods_no_lethe_server(caplog):
-    """test (a) — graceful degradation when the cache is unreachable.
+    """Graceful degradation when the cache is unreachable.
 
     Connector points at a port nothing is listening on. ``get_num_new_
     matched_tokens`` must not propagate the gRPC exception; it logs a
@@ -219,7 +218,7 @@ def test_scheduler_methods_no_lethe_server(caplog):
 
 
 def test_scheduler_methods_cold_cache(server):
-    """test (b) — cold cache, no hits."""
+    """Cold cache, no hits."""
     conn = _make_connector(server)
     request = _make_request(prompt_token_ids=list(range(64)))  # 4 blocks at bs=16
 
@@ -228,7 +227,7 @@ def test_scheduler_methods_cold_cache(server):
 
 
 def test_scheduler_methods_warm_cache(server):
-    """test (c) — first 2 blocks pre-inserted; expect 32 tokens reported."""
+    """First 2 blocks pre-inserted; expect 32 tokens reported."""
     # Use token IDs offset so they don't collide with the cold-cache test's blocks.
     token_ids = list(range(100, 164))  # 64 tokens, 4 blocks
     hashes = _hashes_for_prefix(token_ids, block_size=16)
@@ -242,7 +241,7 @@ def test_scheduler_methods_warm_cache(server):
 
 
 def test_scheduler_methods_partial_warm(server):
-    """test (d) — hit, miss, hit. Only the first contiguous hit counts."""
+    """Hit, miss, hit. Only the first contiguous hit counts."""
     # Distinct token range to keep the cache state of other tests isolated.
     token_ids = list(range(200, 264))  # 64 tokens, 4 blocks
     hashes = _hashes_for_prefix(token_ids, block_size=16)
@@ -257,11 +256,11 @@ def test_scheduler_methods_partial_warm(server):
 
 
 def test_update_state_then_build_meta_roundtrip(server):
-    """test (e) — update_state_after_alloc records pending load; the
-    next build_connector_meta returns metadata with non-empty loads
-    AND non-empty stores (W1 policy: stores everything that wasn't
-    loaded). A second build_connector_meta on the same scheduler_output
-    returns empty loads — consumption is one-shot.
+    """update_state_after_alloc records pending load; the next
+    build_connector_meta returns metadata with non-empty loads AND
+    non-empty stores (policy: store everything that wasn't loaded). A
+    second build_connector_meta on the same scheduler_output returns
+    empty loads — consumption is one-shot.
     """
     from types import SimpleNamespace
 
@@ -282,7 +281,7 @@ def test_update_state_then_build_meta_roundtrip(server):
 
     # A KVCacheBlocks stand-in: only get_block_ids() is read by the
     # implementation. tuple[list[int], ...] outer-per-group, inner per
-    # block. W1 single-group → one inner list of 4 allocated slot IDs.
+    # block. Single-group → one inner list of 4 allocated slot IDs.
     allocated = [101, 102, 103, 104]
     blocks_mock = SimpleNamespace(
         get_block_ids=lambda allow_none=False: (allocated,),
@@ -316,8 +315,8 @@ def test_update_state_then_build_meta_roundtrip(server):
     assert all(b.is_hit is True for b in meta.loads[0].blocks)
     assert [b.vllm_block_id for b in meta.loads[0].blocks] == allocated[:2]
 
-    # Stores: the remaining 2 blocks (W1 policy: store-on-prefill,
-    # skipping what we just loaded).
+    # Stores: the remaining 2 blocks (store-on-prefill, skipping what
+    # we just loaded).
     assert len(meta.stores) == 1
     assert meta.stores[0].request_id == request_id
     assert len(meta.stores[0].blocks) == 2
@@ -345,9 +344,9 @@ def test_update_state_then_build_meta_roundtrip(server):
 
 
 def test_get_num_clamps_negative(server):
-    """test (f) — contrived: vLLM's local cache already covers more
-    tokens than Lethe knows about. The return must be (0, False), NOT
-    a negative count, to keep the scheduler's arithmetic sane.
+    """Contrived: vLLM's local cache already covers more tokens than
+    Lethe knows about. The return must be (0, False), NOT a negative
+    count, to keep the scheduler's arithmetic sane.
     """
     # Use a token range we know is NOT in the cache (cold for Lethe).
     token_ids = list(range(900, 964))  # 64 tokens, 4 blocks
@@ -363,22 +362,15 @@ def test_get_num_clamps_negative(server):
 
 
 def test_llm_generate_smoke_deferred_to_W1_4():
-    """W1.3 originally planned a CPU vLLM ``LLM.generate()`` smoke test
-    to prove the scheduler-side methods survive being driven by a real
-    engine (and that the ``NotImplementedError("W1.4")`` worker-side
-    stubs fire, not the scheduler-side ones). That smoke test is
-    deferred to W1.4 — see ``docs/decisions/W1_3_cpu_vllm.md``.
-
-    Short version of the decision: standard ``vllm==0.19.1`` from PyPI
-    is a CUDA-only wheel; its CPU platform fallback only fires for
-    macOS or a from-source ``vllm-cpu`` build, neither of which
-    applies to WSL2 Linux. Rather than (a) build vllm-cpu from source
-    or (b) violate "GPU work begins at W1.4" by using the GPU now,
-    we close W1.3 on the six unit tests above and pick up the
-    end-to-end LLM-driven check inside W1.4's token-identical
-    correctness test — where it would naturally happen anyway.
+    """A CPU vLLM ``LLM.generate()`` smoke test would prove the
+    scheduler-side methods survive being driven by a real engine. It's
+    not run here: standard ``vllm==0.19.1`` from PyPI is a CUDA-only
+    wheel and its CPU platform fallback only fires on macOS or a
+    from-source ``vllm-cpu`` build, neither of which applies to WSL2
+    Linux. The end-to-end LLM-driven check lives in the token-identical
+    correctness test instead.
     """
     pytest.skip(
-        "moved to W1.4 token-identical test; CPU vllm not available "
-        "in this env (see docs/decisions/W1_3_cpu_vllm.md)"
+        "covered by the token-identical test; CPU vllm not available "
+        "in this env"
     )

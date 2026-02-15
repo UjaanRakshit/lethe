@@ -1,26 +1,11 @@
-// Lethe — LetheCache facade unit test (W1).
-//
-// Covers the Lookup / Insert round-trip at the facade layer, not the
-// gRPC wire (that's in tests/integration/test_client_roundtrip.py).
-// Single-node, DRAM-only — matches the W1 deliverable scope.
-//
-// Specifically asserts:
-//   * Insert → Lookup returns LocalHit with a non-empty local_data
-//     vector (W7: owned bytes, not borrowed span).
-//   * Lookup miss returns Miss (no router → no RemoteHit path in W1).
-//   * Multiple inserts (different ids) coexist; LookupResult counts
-//     hits and misses correctly per the proto's contract.
-//   * cluster_epoch() == 0 in W1 (no Membership yet; cache.cpp returns
-//     0 explicitly when membership_ is null).
-//   * Entry::local_data is independent of cache mutation: capturing
-//     the bytes after a Lookup, then doing more Inserts, then
-//     re-Looking-up the original id still returns the same bytes.
-//     Pre-W7 this exercised a borrowed-span lifetime contract;
-//     post-W7 the entry owns its bytes outright so the test is a
-//     trivially-satisfied invariant — kept as a regression guard
-//     against any future "optimization" that re-introduces borrows.
-//
-// Standalone main()-with-asserts.
+// LetheCache facade unit test. Covers the Insert/Lookup round-trip at the
+// facade layer (not the gRPC wire — that's in
+// tests/integration/test_client_roundtrip.py), single-node DRAM-only.
+// Asserts LocalHit on insert, Miss on lookup miss, correct hit/miss
+// counts, cluster_epoch()==0 when membership is null, and that
+// Entry::local_data is independent of subsequent cache mutation (the
+// entry owns its bytes; kept as a regression guard against re-introducing
+// borrows). Standalone main()-with-asserts.
 
 #include "lethe/cache.hpp"
 #include "lethe/types.hpp"
@@ -72,7 +57,7 @@ CacheConfig MakeCfg() {
   cfg.node_id = "test_node";
   cfg.hbm_bytes = 0;
   cfg.dram_bytes = 1ULL << 20;  // 1 MiB
-  cfg.ssd_bytes = 0;             // SSD disabled in W1.
+  cfg.ssd_bytes = 0;             // SSD disabled.
   return cfg;
 }
 
@@ -124,15 +109,14 @@ void TestLookupMissReturnsMiss() {
 
 void TestClusterEpochZeroInW1() {
   LetheCache cache(MakeCfg());
-  // No Membership yet → epoch is 0 unconditionally.
+  // No Membership → epoch is 0 unconditionally.
   assert(cache.cluster_epoch() == 0);
 }
 
 void TestLocalDataSpanCopyPattern() {
-  // The gRPC shim pattern is: Lookup → copy span into proto bytes →
-  // return. This test demonstrates that the pattern is safe: the
-  // copy happens entirely within the shim's stack frame, no
-  // intervening mutation can race.
+  // The gRPC handler does Lookup → copy bytes into the proto → return.
+  // That copy happens entirely within one stack frame, so no intervening
+  // mutation can race it. Verify that pattern holds.
 
   LetheCache cache(MakeCfg());
   cache.Start();
@@ -147,21 +131,16 @@ void TestLocalDataSpanCopyPattern() {
   assert(result.entries.size() == 1);
   assert(result.entries[0].where == LookupResult::Entry::Where::LocalHit);
 
-  // Simulate the gRPC shim: copy bytes from the span into a local
-  // buffer BEFORE returning control to anything that might mutate.
+  // Copy bytes into a local buffer before returning control to anything
+  // that might mutate, as the gRPC handler does.
   std::vector<std::byte> captured(
       result.entries[0].local_data.begin(),
       result.entries[0].local_data.end());
 
-  // Trigger an Insert that doesn't touch the existing block id (W1's
-  // public API doesn't expose Erase; this is the most "mutating" call
-  // available at the facade layer). Inserting a DIFFERENT block must
-  // not invalidate the prior block's data — and it doesn't, per
-  // unordered_map's reference-stability-on-rehash guarantee. The
-  // captured bytes still match the original; if we had instead held
-  // the raw span across the mutation, that would still be valid in
-  // W1 but tracking the safe pattern matters for W4+ when Erase /
-  // eviction can race.
+  // Insert a different block — the most mutating call the facade exposes
+  // (no Erase in the public API). It must not invalidate the prior
+  // block's data, per unordered_map's reference-stability-on-rehash
+  // guarantee, so the captured bytes still match the original.
   KvBlock other = MakeBlock(8, 4096, 0x55);
   cache.Insert({other}, "req", "client");
 

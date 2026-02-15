@@ -1,17 +1,13 @@
 #pragma once
-// Lethe — top-level cache coordinator.
+// Top-level cache coordinator. Owns the lifetimes of every subsystem and
+// exposes the small surface the gRPC service handlers call.
 //
-// Owns the lifetimes of every subsystem (block store, routing, replication,
-// eviction, membership, RDMA, metrics) and exposes the small surface area
-// that the gRPC service handlers actually call.
+// Threading: all public methods are thread-safe. The facade holds no state
+// lock — each subsystem owns its own mutex, and a Cache method touching N
+// subsystems acquires their locks in declaration order.
 //
-// Threading: all public methods are thread-safe. The facade itself holds no
-// state lock — each subsystem owns its own mutex and a Cache method that
-// touches N subsystems acquires their locks in declaration order.
-//
-// vLLM integration: the Python-side KV transfer connector lives in
-// client/lethe_client/vllm_hook.py. That file is the ONLY place that talks
-// to the vLLM scheduler; everything below is provider-agnostic.
+// vLLM integration lives entirely in the Python-side connector
+// (client/lethe_client/vllm_hook.py); everything below is provider-agnostic.
 
 #include <atomic>
 #include <chrono>
@@ -36,9 +32,9 @@ class Metrics;
 
 struct CacheConfig {
   std::string node_id;
-  // Static peer set (W3-W4: immutable for process lifetime; W8 makes
-  // this dynamic via heartbeat-driven membership). Each entry binds a
-  // routing identity (node_id) to a transport address (host:port).
+  // Static peer set, made dynamic via heartbeat-driven membership. Each
+  // entry binds a routing identity (node_id) to a transport address
+  // (host:port).
   std::vector<StaticPeer> seed_peers;
 
   // Capacities per tier (bytes).
@@ -73,11 +69,10 @@ struct LookupResult {
     Where where = Where::Miss;
     std::optional<std::string> remote_node;  // populated when RemoteHit
     Tier tier = Tier::DRAM;                  // for LocalHit / RemoteHit
-    // For LocalHit: an OWNED copy of the block payload (W7 change from
-    // W1's borrowed span). The SSD tier can't safely lend spans into
-    // mmap'd memory across slot reuse, and uniform ownership is simpler
-    // than per-tier dispatch. Cost: one memcpy per Get. Negligible at
-    // 64 KiB block sizes. Empty when not LocalHit.
+    // For LocalHit: an OWNED copy of the block payload. The SSD tier can't
+    // safely lend spans into mmap'd memory across slot reuse, and uniform
+    // ownership is simpler than per-tier dispatch. Cost: one memcpy per Get,
+    // negligible at 64 KiB block sizes. Empty when not LocalHit.
     std::vector<std::byte> local_data;
   };
   std::vector<Entry> entries;
@@ -87,10 +82,10 @@ struct LookupResult {
 
 // Options for Insert. Default is async replication: the call returns once
 // the primary tier write completes; replica pushes happen on a background
-// thread and any failures show up in `lethe_replicas_under_target`. Setting
-// `sync_replicate = true` blocks the call until R-1 replicas ACK (or
-// timeout). Use sync only for tests and for the durability-critical writes
-// in the chaos suite; the production / benchmark path is async.
+// thread and failures surface in `lethe_replicas_under_target`. Setting
+// `sync_replicate = true` blocks until R-1 replicas ACK (or timeout) — used
+// only by tests and durability-critical chaos writes; the benchmark path is
+// async.
 struct InsertOptions {
   bool sync_replicate = false;
   std::chrono::milliseconds sync_timeout{500};
@@ -121,14 +116,10 @@ class LetheCache {
                            std::vector<std::byte> payload,
                            StreamPurpose purpose);
 
-  // Local-only fetch: returns block bytes + tier if present in the
-  // local TieredStore, nullopt otherwise. Does NOT consult the router
-  // and does NOT trigger read-repair. This is what the gRPC Fetch
-  // handler uses — going through Lookup would recurse:
-  // Fetch handler → Lookup → read-repair → FetchFromAny → peer Fetch
-  // → peer Lookup → peer read-repair → ... So Fetch needs a non-
-  // recursive entry point. Same data shape as a LocalHit entry's
-  // local_data / tier fields.
+  // Local-only fetch: returns block bytes + tier if present in the local
+  // TieredStore, nullopt otherwise. Does NOT consult the router and does NOT
+  // trigger read-repair, so the gRPC Fetch handler can use it without
+  // recursing (Fetch → Lookup → read-repair → peer Fetch → ...).
   struct LocalFetchResult {
     std::vector<std::byte> data;
     Tier tier;
@@ -157,10 +148,9 @@ class LetheCache {
   CacheConfig cfg_;
   std::unique_ptr<TieredStore> store_;
   std::unique_ptr<Router> router_;
-  // Metrics is a leaf that Replicator/Membership/Evictor record into
-  // from their worker/heartbeat/eviction threads. It MUST outlive all
-  // of them, so it is declared HERE (before transport_/replicator_/…)
-  // → destroyed AFTER them in reverse-declaration order. Its own dtor
+  // Metrics is a leaf that Replicator/Membership/Evictor record into from
+  // their worker/heartbeat/eviction threads, so it MUST outlive all of them.
+  // Declared first → destroyed last (reverse-declaration order). Its dtor
   // joins the /metrics HTTP thread, which only touches its own atomics.
   std::unique_ptr<Metrics> metrics_;
   // Subsystem destruction order matters and is encoded by declaration

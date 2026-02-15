@@ -1,11 +1,10 @@
 #pragma once
-// Lethe — bulk KV transport for block transfer (W5–6).
+// Bulk KV transport for block transfer.
 //
 // gRPC handles control-plane RPCs and small messages. For KV block transfer
-// (the bytes that actually matter for throughput), we want RDMA over
-// SoftRoCE (rxe) when available, and fall back to a gRPC bidi-stream
-// transport otherwise. Both implementations sit behind the abstract
-// KvTransport interface defined here.
+// (the bytes that matter for throughput) we want RDMA over SoftRoCE (rxe)
+// when available, falling back to a gRPC bidi-stream transport otherwise.
+// Both sit behind the abstract KvTransport interface defined here.
 //
 // Concrete implementations:
 //   - GrpcStreamTransport (always available; default when LETHE_ENABLE_RDMA
@@ -15,10 +14,8 @@
 //     first Send; pinned buffer pool per peer for sends, shared pool for
 //     receives.
 //
-// SCOPE GUARDRAIL: if SoftRoCE setup or QP debugging exceeds 2.5 weeks of
-// W5–6, the fallback is to ship the gRPC transport and call it done. The
-// interface here is implementation-agnostic so that swap is a constructor
-// change in main.cpp.
+// The interface is implementation-agnostic so that swapping the data path
+// is a constructor change in main.cpp.
 
 #include <cstddef>
 #include <functional>
@@ -81,24 +78,22 @@ class KvTransport {
                                  StreamPurpose purpose,
                                  std::span<const std::byte> data) = 0;
 
-  // Fetch a single block from a peer by id. Returns the materialized
-  // block on hit, nullopt on miss or RPC failure. Per-call deadline is
-  // the implementation's choice (gRPC: 500ms; ibverbs: TBD when W12
-  // hardware arrives). Not connected to Send semantically — Fetch is
-  // a request/response shape; Send is fire-and-stage.
+  // Fetch a single block from a peer by id. Returns the materialized block
+  // on hit, nullopt on miss or RPC failure. Per-call deadline is the
+  // implementation's choice (gRPC: 500ms; ibverbs: TBD when hardware
+  // arrives). Distinct from Send semantically — Fetch is request/response;
+  // Send is fire-and-stage.
   virtual std::future<std::optional<KvBlock>> Fetch(
       const std::string& peer_id, BlockId id) = 0;
 };
 
-// gRPC bidi-stream transport. Always available. Default when RDMA is off.
-//
-// W5-6 implementation note: this implementation is the production data
-// path. The Send method invokes Insert RPCs (replication push); Fetch
-// invokes the Fetch RPC. Both run synchronously inside the call and
-// return a ready future — true async dispatch happens at the
+// gRPC bidi-stream transport. Always available. Default when RDMA is off,
+// and currently the actual data path. Send invokes Insert RPCs (replication
+// push); Fetch invokes the Fetch RPC. Both run synchronously inside the call
+// and return a ready future — true async dispatch happens at the
 // Replicator's worker-pool layer above us. See
-// docs/decisions/W5_rdma_fallback.md for why we ship gRPC as the data
-// path despite the "RDMA for KV transfer" wording in DESIGN.md §6.
+// docs/decisions/W5_rdma_fallback.md for why gRPC is the data path despite
+// the "RDMA for KV transfer" wording in DESIGN.md §6.
 class GrpcStreamTransport : public KvTransport {
  public:
   GrpcStreamTransport(RdmaConfig cfg, OnReceiveFn on_receive);
@@ -121,10 +116,10 @@ class GrpcStreamTransport : public KvTransport {
 
 // libibverbs / SoftRoCE transport. Header-only declaration unless
 // LETHE_ENABLE_RDMA=ON AND a SoftRoCE / real-IB device is present at
-// runtime. Per docs/decisions/W5_rdma_fallback.md, the W5-6 milestone
-// could not validate this against real hardware (WSL2 kernel ships
-// without the InfiniBand subsystem); the abstraction stays so the
-// swap is a constructor change in main.cpp when hardware arrives.
+// runtime. Per docs/decisions/W5_rdma_fallback.md this could not be
+// validated against real hardware (WSL2 kernel ships without the
+// InfiniBand subsystem); the abstraction stays so the swap is a
+// constructor change in main.cpp when hardware arrives.
 class IbverbsTransport : public KvTransport {
  public:
   IbverbsTransport(RdmaConfig cfg, OnReceiveFn on_receive);

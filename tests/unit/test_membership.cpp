@@ -1,18 +1,12 @@
-// Lethe — Membership unit test.
+// Membership unit test.
 //
 // Covers the slice of Membership::OnHeartbeat that maintains per-peer
 // `last_seen_epoch` and surfaces it through HeartbeatReply::alive_peers.
-// The full failure-detector behavior (suspect/dead transitions, gossip
-// convergence) lands in W8; this test will be extended then.
+// Full failure-detector behavior (suspect/dead transitions, gossip
+// convergence) is exercised elsewhere.
 //
-// Build wiring: this file is intentionally self-contained — a single
-// main() that exits non-zero on assertion failure — so it can be built
-// before the project picks a C++ test framework. When W3+ adds
-// add_subdirectory(tests) and a real harness (likely GoogleTest), the
-// asserts will be ported to TEST() macros without changing the test
-// logic.
-//
-// Standalone build (assumes membership.cpp is on the link line):
+// Self-contained: a single main() that exits non-zero on assertion
+// failure. Standalone build (assumes membership.cpp is on the link line):
 //   cl /std:c++20 /EHsc /I cache_server/include \
 //       tests/unit/test_membership.cpp cache_server/src/membership.cpp \
 //       /Fe:test_membership.exe

@@ -1,17 +1,14 @@
-// Lethe — C++ Router unit tests (W3).
+// C++ Router unit tests.
 //
-// Mirrors tests/unit/test_routing.py at the API level — the
-// distinct-peers, route-stability, and minimal-disruption checks —
-// plus a cross-language test that shells out to the hash_compat_driver
-// binary and asserts the C++ Router's HashVirtualNode and the driver's
-// BLAKE3 output agree (which is what the cross-language compat in
-// tests/correctness/test_hash_compat.py exercises end-to-end via
-// Python). The redundancy is on purpose — the C++-side test exists
-// so a Linux-only build chain still has a routing-equivalence assertion
-// even when the Python test isn't run.
+// Mirrors tests/unit/test_routing.py at the API level (distinct-peers,
+// route-stability, minimal-disruption), plus a cross-language test that
+// shells out to the hash_compat_driver binary and asserts the C++
+// Router's HashVirtualNode agrees with the driver's BLAKE3 output. That
+// redundancy is deliberate: a Linux-only build chain still gets a
+// routing-equivalence assertion even when the Python test isn't run.
 //
-// Standalone main()-with-asserts, like the rest of tests/unit/. The
-// driver path resolves at runtime via env or relative path.
+// Standalone main()-with-asserts. The driver path resolves at runtime via
+// env or relative path.
 
 #include "lethe/routing.hpp"
 #include "lethe/types.hpp"
@@ -118,16 +115,11 @@ void TestIsLocalReplicaIncludesPrimary() {
 
 // --- Cross-language compat via the driver subprocess --------------
 
-// Reads a hex digest from popen() over the driver binary, parses to
-// uint64 from the first 8 bytes LE, compares to the Router's
-// internal HashVirtualNode (exposed via a friend-equivalent: we
-// derive the expected via SetPeers + binary search into the ring).
-//
-// We don't bind to the Router's private HashVirtualNode directly;
-// instead we drive a single-peer/single-vnode ring and read the
-// ring entry. That's a higher-fidelity test of the WHOLE chain
-// (key encoding, BLAKE3, LE bytes, ring placement) than a unit
-// call to HashVirtualNode would be.
+// HashVirtualNode is private, so rather than call it we drive a
+// single-peer/single-vnode ring and compare the driver's digest against
+// the ring placement. That exercises the whole chain (key encoding,
+// BLAKE3, LE bytes, ring placement), which is higher-fidelity than a unit
+// call would be.
 
 std::string find_driver_path() {
   // 1) Env var override.
@@ -240,13 +232,10 @@ void TestCrossLanguageRingKeyAgrees() {
       std::abort();
     }
     [[maybe_unused]] auto driver_u64 = le_u64_from_hex_prefix(hex);
-    // The router's ring is private. As a proxy check, we round-trip
-    // through Route() which uses the same HashVirtualNode internally:
-    // we already asserted route.primary above. The deeper assertion
-    // — that the bytes match — is covered by the Python
-    // test_cpp_python_ring_key_agree using the same driver. This
-    // C++ test guarantees the Router's SetPeers / Route path
-    // doesn't ignore the peer string.
+    // The ring is private, so this asserts only route.primary (above) as
+    // a proxy that SetPeers/Route honors the peer string. The exact
+    // byte-match assertion lives in the Python test
+    // test_cpp_python_ring_key_agree, which uses the same driver.
     std::printf("test_routing: cross-lang OK for (%s, %u) → %.16s...\n",
                 c.peer, c.vn, hex.c_str());
   }

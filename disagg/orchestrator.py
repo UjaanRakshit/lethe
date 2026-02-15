@@ -1,4 +1,4 @@
-"""Disaggregated prefill/decode — single-engine role sequencing (W9).
+"""Disaggregated prefill/decode — single-engine role sequencing.
 
 HONEST SCOPE NOTE. This is NOT physical two-instance disaggregation
 (separate prefill and decode GPU workers). It is ONE vLLM engine driven
@@ -13,7 +13,7 @@ in two role-sequenced phases against a Lethe cluster:
 
 The KV genuinely round-trips through Lethe between the phases — that is
 the disaggregated KV TRANSPORT PATH being validated. Physical worker
-separation (two engines, two GPUs) is deferred to W12 on PACE, where
+separation (two engines, two GPUs) is deferred until hardware with
 48-80 GB VRAM makes a real prefill/decode split trivial. Until then,
 naming things "prefill_worker process" / "decode_worker process" would
 be dishonest — there is one process, one engine, two phases.

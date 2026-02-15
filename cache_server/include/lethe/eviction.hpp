@@ -1,6 +1,4 @@
 #pragma once
-// Lethe — eviction (W8).
-//
 // Per-node SIEVE eviction (NSDI '24).
 //
 // SIEVE keeps blocks in FIFO insertion order with a 1-bit `visited` flag
@@ -10,15 +8,14 @@
 //   if hand->visited:        clear visited; advance hand          (give a 2nd chance)
 //   else:                    evict hand; advance hand to next     (the victim)
 //
-// `visited` is set by Evictor::MarkVisited(), which is called from every
-// BlockStore::Get hit (see block_store.hpp). It is cleared only by the
-// scanning hand. This is the real SIEVE — NOT "approximate LRU by
-// timestamp" — and that distinction matters for the comparison vs. LRU we
-// want to be able to defend in the design doc.
+// `visited` is set by Evictor::MarkVisited(), called from every
+// BlockStore::Get hit (see block_store.hpp), and cleared only by the
+// scanning hand. This is real SIEVE, not approximate-LRU-by-timestamp —
+// that distinction matters for the LRU comparison in the design doc.
 //
-// Cluster-wide coordination: when a block is evicted, broadcast (gossip)
-// the eviction so that peers' read-repair routing tables don't try to
-// fetch from us. Best-effort; the worst case is one wasted RPC.
+// Cluster-wide coordination: on eviction, broadcast (gossip) it so peers'
+// read-repair routing tables don't try to fetch from us. Best-effort; worst
+// case is one wasted RPC.
 
 #include <atomic>
 #include <chrono>
@@ -47,7 +44,7 @@ class Evictor {
           TieredStore* store,
           Membership* membership,
           std::string local_node_id,
-          Metrics* metrics = nullptr);  // W10; nullable for tests
+          Metrics* metrics = nullptr);  // nullable for tests
   ~Evictor();
 
   Evictor(const Evictor&) = delete;
@@ -70,11 +67,10 @@ class Evictor {
   };
   PassResult RunPassForTier(Tier tier);
 
-  // Called from Cache::OnEvictBroadcast — record that a peer evicted
-  // these blocks. Read-repair (Replicator::FetchFromAny) currently
-  // does NOT consult this; the W8 wire is in place and the optimization
-  // is a small follow-up if profiling shows wasted cross-cluster
-  // fetches against just-evicted nodes.
+  // Called from Cache::OnEvictBroadcast — record that a peer evicted these
+  // blocks. Read-repair (Replicator::FetchFromAny) does NOT consult this
+  // yet; the wire is in place and skipping just-evicted nodes is a small
+  // follow-up if profiling shows wasted cross-cluster fetches.
   void OnPeerEviction(const std::vector<BlockId>& evicted,
                       const std::string& peer);
 
@@ -83,16 +79,16 @@ class Evictor {
   std::size_t peer_evicted_count_for_testing(const std::string& peer) const;
 
  private:
-  // Helper: fire one EvictBroadcast RPC per known peer carrying ALL
-  // the block IDs evicted in the current pass. Best-effort; failures
-  // are swallowed per CLAUDE.md rule 2.
+  // Helper: fire one EvictBroadcast RPC per known peer carrying ALL the
+  // block IDs evicted in the current pass. Best-effort; failures are
+  // swallowed.
   void BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted);
 
   EvictionConfig cfg_;
   TieredStore* store_;        // not owned
   Membership* membership_;    // not owned
   std::string local_node_id_;
-  Metrics* metrics_;          // W10; not owned; nullable
+  Metrics* metrics_;          // not owned; nullable
 
   // Per-instance state (threads, hand pointers, peer stubs, peer-
   // eviction tracking) lives in a TU-local registry keyed by

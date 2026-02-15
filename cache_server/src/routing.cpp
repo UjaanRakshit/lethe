@@ -1,26 +1,23 @@
-// Lethe — consistent-hash router (W3).
+// Consistent-hash router.
 //
-// Implements the bit-compatibility contract from
+// Implements the bit-compatibility contract with
 // client/lethe_client/routing.py — same hash function (BLAKE3), same
-// virtual-node count (128 default), same per-vnode key format
-// (`f"{peer}#{vn}"` UTF-8 bytes), same uint64 derivation (first 8
-// bytes of digest, little-endian). Cross-language equivalence is
-// asserted by tests/correctness/test_hash_compat.py via the
-// hash_compat_driver tool. The W0 invariant
-// (docs/DECISIONS.md → "Heartbeat wire format" et al.) requires this.
+// virtual-node count (128 default), same per-vnode key format (`f"{peer}#{vn}"`
+// UTF-8 bytes), same uint64 derivation (first 8 bytes of digest,
+// little-endian). Cross-language equivalence is asserted by
+// tests/correctness/test_hash_compat.py via the hash_compat_driver tool.
 //
 // Routing of a BlockId:
-//   - HashBlock takes the FIRST 8 BYTES of id.hash (already a
-//     32-byte BLAKE3 digest from the chained-prefix hash), little-
-//     endian uint64. No additional hashing. The Python side does
-//     the same: int.from_bytes(block_hash[:8], "little").
-//   - id.layer / head_group / model_id are intentionally NOT
-//     consulted. See DESIGN.md §1 "What the router hashes" and
-//     types.hpp BlockId for the rationale.
+//   - HashBlock takes the FIRST 8 BYTES of id.hash (already a 32-byte BLAKE3
+//     digest from the chained-prefix hash), little-endian uint64. No
+//     additional hashing. The Python side does the same:
+//     int.from_bytes(block_hash[:8], "little").
+//   - id.layer / head_group / model_id are intentionally NOT consulted. See
+//     DESIGN.md §1 "What the router hashes" and types.hpp BlockId.
 //
-// Ring lookup: binary search of the sorted vector for the first
-// entry whose hash >= target, with wraparound. Replicas are the
-// next R-1 DISTINCT peers walking the ring clockwise.
+// Ring lookup: binary search of the sorted vector for the first entry whose
+// hash >= target, with wraparound. Replicas are the next R-1 DISTINCT peers
+// walking the ring clockwise.
 
 #include "lethe/routing.hpp"
 
@@ -66,9 +63,9 @@ std::uint64_t Router::HashBlock(const BlockId& id) const {
 
 std::uint64_t Router::HashVirtualNode(const std::string& peer,
                                        std::uint32_t vn) const {
-  // Key format: literal f-string f"{peer}#{vn}" UTF-8 — verified
-  // bit-for-bit against the Python HashRing's encoding. Changing this
-  // breaks the W0 cross-language invariant.
+  // Key format: literal f-string f"{peer}#{vn}" UTF-8 — verified bit-for-bit
+  // against the Python HashRing's encoding. Changing this breaks the
+  // cross-language invariant.
   std::string key;
   key.reserve(peer.size() + 1 + 10);
   key += peer;

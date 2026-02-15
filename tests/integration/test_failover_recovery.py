@@ -1,7 +1,6 @@
-"""W8 CHECKPOINT 2 — failover recovery within the 3.5s budget.
+"""Failover recovery within the 3.5s budget.
 
-The load-bearing W8 acceptance test. Verifies the W0 design's
-recovery-time claim:
+Verifies the design's recovery-time claim:
 
     dead_after (3000ms detection)  +  ~500ms re-replication  =  3.5s
 
@@ -9,7 +8,7 @@ Test shape:
   1. Spawn 3 lethe_server subprocesses on loopback (50051/2/3) with a
      shared --peers spec.
   2. Insert N=200 distinct blocks via LetheClient (multi-node mode).
-     Each block lands at R=2 across the cluster per the W4 contract.
+     Each block lands at R=2 across the cluster.
   3. SIGKILL node1 (the middle one, just to make the test independent
      of which node happens to be primary for any given block).
   4. Poll the surviving nodes (node0 + node2) every 100ms via direct
@@ -19,9 +18,9 @@ Test shape:
   5. Repeat the cycle 3 times; take the median wall-clock.
 
 Acceptance: median ≤ 3.5s. If borderline (3.5-5s): re-run more, decide
-on distribution. If >5s consistently: STOP-AND-REPORT — the W0 budget
-split is under threat and we triage. Do NOT silently widen dead_after
-to make the test pass.
+on distribution. If >5s consistently the budget split is under threat
+and needs triage — do NOT silently widen dead_after to make the test
+pass.
 
 Subprocess lifecycle: spawn the orchestrator processes in a new
 session so SIGINT to the test wraps to the cluster. Teardown sends
@@ -53,11 +52,11 @@ PORTS = (50061, 50062, 50063)   # different from test_three_node_python.py
 NODES = ("fover0", "fover1", "fover2")
 HOST = "127.0.0.1"
 
-# Budget per the W0 design: dead_after (3s) + ~500ms re-replication.
+# Budget per the design: dead_after (3s) + ~500ms re-replication.
 BUDGET_SECONDS = 3.5
 
 # Hard cap so a misbehaving run doesn't block CI forever. >5s is the
-# "stop and report" threshold per CHECKPOINT 2.
+# threshold above which the budget split needs triage.
 MAX_WAIT_SECONDS = 8.0
 
 NUM_BLOCKS = 200
@@ -269,7 +268,7 @@ def test_failover_recovery_meets_budget():
 
     median_wall = statistics.median(walls)
     print(
-        f"\nCHECKPOINT 2 — failover recovery cycles:\n"
+        f"\nfailover recovery cycles:\n"
         f"  walls (s): {[round(w, 3) for w in walls]}\n"
         f"  median:    {round(median_wall, 3)}s\n"
         f"  budget:    {BUDGET_SECONDS}s\n"
@@ -285,10 +284,9 @@ def test_failover_recovery_meets_budget():
         )
 
     # The 3.5s budget itself. Median, not max, because environmental
-    # noise can spike a single cycle (per the W4 perf-regression
-    # lesson — measure with multiple samples).
+    # noise can spike a single cycle — measure with multiple samples.
     assert median_wall <= BUDGET_SECONDS, (
         f"recovery budget MISSED: median={median_wall:.3f}s vs "
-        f"budget={BUDGET_SECONDS}s. Per CHECKPOINT 2 stop-and-report: "
-        f"this is information, not a timer to widen."
+        f"budget={BUDGET_SECONDS}s. This is information to triage, not "
+        f"a timer to widen."
     )

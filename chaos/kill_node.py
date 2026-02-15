@@ -1,4 +1,4 @@
-"""Chaos harness — kill nodes in a running Lethe cluster (W11).
+"""Chaos harness — kill nodes in a running Lethe cluster.
 
 Usage:
     python -m chaos.kill_node \
@@ -13,10 +13,10 @@ Modes:
 
 After the kill (and optional restart), the orchestrator should observe:
   - other nodes' Lookups for blocks owned by the killed node return
-    RemoteHit pointing at a replica (W4 read-repair).
-  - cluster_epoch increments (W8 membership change).
-  - re-replication completes within REPLICATION_RECOVERY_BUDGET seconds.
-  - failover demo measured by chaos.invariants assertions.
+    RemoteHit pointing at a replica (read-repair).
+  - cluster_epoch increments on the membership change.
+  - re-replication completes within the recovery budget.
+  - failover behavior measured by chaos.invariants assertions.
 """
 
 from __future__ import annotations

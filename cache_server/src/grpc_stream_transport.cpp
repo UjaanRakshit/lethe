@@ -1,35 +1,28 @@
-// Lethe — GrpcStreamTransport. Default bulk-KV transport; the production
-// data path for W5-6 since SoftRoCE is unavailable in the WSL2 dev
-// environment (see docs/decisions/W5_rdma_fallback.md).
+// GrpcStreamTransport — default bulk-KV transport, used as the data path
+// because SoftRoCE is unavailable in the dev environment (see
+// docs/decisions/W5_rdma_fallback.md).
 //
 // Wire model:
-//   * Send  → Insert RPC with a single Block. Replication push reaches
-//             the peer's gRPC Insert handler → LetheCache::Insert → local
-//             tier write. Replicator's bounded queue + worker pool decides
-//             how many concurrent Sends fly at once; this transport runs
-//             each Send synchronously inside the worker thread and
-//             resolves a ready future, so the worker is naturally
+//   * Send  → Insert RPC with a single Block. The push reaches the peer's
+//             gRPC Insert handler → LetheCache::Insert → local tier write.
+//             Each Send runs synchronously inside the Replicator worker
+//             thread and resolves a ready future, so the worker is naturally
 //             back-pressured by its own thread budget.
-//   * Fetch → Fetch RPC, single block. Same synchronous-inside-call shape
-//             as Send; the parallel-fan-out concurrency for read-repair
-//             is the caller's responsibility (Replicator::FetchFromAny
-//             uses std::async per peer).
+//   * Fetch → Fetch RPC, single block. Same synchronous shape; parallel
+//             read-repair fan-out is the caller's responsibility
+//             (Replicator::FetchFromAny uses std::async per peer).
 //
-// Why not StreamBlocks (the bidi-stream RPC defined in proto/lethe.proto)?
-// Insert is what W4's Replicator used, and the existing 3-node smoke
-// asserts replication via Insert's wire path. Swapping to StreamBlocks
-// here would force the W4 server-side handler to grow a bidi-stream
-// implementation, which is scope creep we don't need for the fallback
-// session. The W12 IB-hardware swap is a transport-level change, not a
-// wire-level change.
+// Why Insert rather than the bidi-stream StreamBlocks RPC: Insert is what the
+// Replicator already used and what the 3-node smoke asserts against. Streaming
+// here would force the server handler to grow a bidi-stream implementation we
+// don't need. The IB-hardware swap is a transport-level change, not a
+// wire-level one.
 //
-// OnReceive callback: this transport has no recv-side responsibility.
-// Receive happens through the regular gRPC service handlers in main.cpp
-// (Insert / Fetch / StreamBlocks RPC entry points). The OnReceiveFn
-// is stored but not invoked here; the field exists to keep the
-// constructor signature symmetric with IbverbsTransport (which DOES
-// need a recv callback when it lands at W12 — RDMA receives don't
-// flow through the gRPC handlers).
+// OnReceive: this transport has no recv-side responsibility — receives arrive
+// through the regular gRPC service handlers in main.cpp. The OnReceiveFn is
+// stored but never invoked here; the field exists to keep the constructor
+// symmetric with IbverbsTransport, whose RDMA receives don't flow through the
+// gRPC handlers.
 
 #include "lethe/kv_transport.hpp"
 
@@ -126,8 +119,7 @@ void GrpcStreamTransport::Connect(const std::string& peer_id,
   if (it != impl_->peers.end()) return;
   PeerStub p;
   p.address = address;
-  // Insecure for the W5-6 single-rack / loopback scope. TLS is a W11+
-  // chaos-suite concern; deferred.
+  // Insecure for the single-rack / loopback scope. TLS is deferred.
   p.channel = grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
   p.stub = ::lethe::rpc::LetheCache::NewStub(p.channel);
   impl_->peers.emplace(peer_id, std::move(p));
@@ -158,8 +150,7 @@ std::future<bool> GrpcStreamTransport::Send(
   ::lethe::rpc::InsertRequest req;
   req.set_request_id("");
   req.set_source_node("");  // populated by Replicator via a separate path
-                            // when wire-tagging by source becomes useful
-                            // (W8 will surface this).
+                            // when wire-tagging by source becomes useful.
   auto* b = req.add_blocks();
   *b->mutable_id() = BlockIdToProto(id);
   b->set_kv_data(data.data(), data.size());
@@ -207,12 +198,11 @@ std::future<std::optional<KvBlock>> GrpcStreamTransport::Fetch(
   return fut;
 }
 
-// Free function declared in kv_transport.hpp. Always-built TU so this
-// symbol is present regardless of LETHE_ENABLE_RDMA. The current body
-// reports "no" unconditionally — main.cpp's transport factory does its
-// own LETHE_ENABLE_RDMA #ifdef gate to decide whether to try
-// IbverbsTransport. When real IB hardware lands (W12 PACE), this body
-// becomes a libibverbs probe (open device, check capabilities).
+// Free function declared in kv_transport.hpp. Always-built TU so this symbol
+// is present regardless of LETHE_ENABLE_RDMA. Reports "no" unconditionally —
+// the transport factory does its own LETHE_ENABLE_RDMA #ifdef gate to decide
+// whether to try IbverbsTransport. With real IB hardware this body would
+// become a libibverbs probe (open device, check capabilities).
 bool RdmaIsAvailable(const std::string& /*device_name*/) {
   return false;
 }

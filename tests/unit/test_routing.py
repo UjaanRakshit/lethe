@@ -1,4 +1,4 @@
-"""Unit: consistent-hash router (W3)."""
+"""Unit: consistent-hash router."""
 from __future__ import annotations
 
 from lethe_client.routing import HashRing

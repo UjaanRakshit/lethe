@@ -1,19 +1,19 @@
-"""Invariant verification under failure injection (W11).
+"""Invariant verification under failure injection.
 
-This module drives a running 3-node Lethe cluster through five chaos
-scenarios and asserts the cluster's safety + liveness invariants. It is
-both a library (the `ClusterProbe` + scenario functions) and a CLI:
+Drives a running 3-node Lethe cluster through five chaos scenarios and
+asserts the cluster's safety + liveness invariants. Both a library (the
+`ClusterProbe` + scenario functions) and a CLI:
 
     python -m chaos.invariants --scenario sigkill
     python -m chaos.invariants --scenario all
 
-WHY behavioral probing instead of Prometheus PromQL (the W0 stub's plan):
+Why behavioral probing instead of Prometheus PromQL:
   * Prometheus scrapes every 5s (deploy/prometheus.yml). A 3.5s recovery
     budget cannot be measured at 5s resolution.
   * `lethe_replicas_under_target` is NOT a live "current under-replication"
     gauge — replication.cpp sets it to the *dispatched count* on the last
     membership change and never clears it, so "wait until it hits 0" never
-    fires. (See docs/DECISIONS.md 2026-05-28.)
+    fires.
   * `lethe_failover_recovery_seconds` is declared but has no call site, so
     the histogram is always empty.
   The only metric we trust here is `lethe_cluster_epoch`, scraped directly
@@ -22,7 +22,7 @@ WHY behavioral probing instead of Prometheus PromQL (the W0 stub's plan):
   local-only Fetch (the server's Fetch handler is FetchLocal — no peer
   recursion, so a hit means that node physically holds the bytes).
 
-THE INVARIANTS
+The invariants:
   INV-1  No data loss. Every corpus block is retrievable from >=1 surviving
          node at all times (R=2 means one death never zeroes a block).
   INV-2  Failure detected. A survivor's cluster_epoch increments within the
@@ -31,12 +31,12 @@ THE INVARIANTS
          (R=2 across survivors) within the recovery budget.
   INV-4  No stale routing. After detection completes, no survivor returns a
          RemoteHit pointing at the dead node.
-  INV-5  Load path stays alive. The ring-routed hit-rate (the W9-lesson
-         metric) never collapses to zero through failure + recovery.
+  INV-5  Load path stays alive. The ring-routed hit-rate never collapses to
+         zero through failure + recovery.
   INV-6  No corruption. Every byte a node serves for a BlockId matches the
          bytes inserted for that BlockId (content integrity).
 
-REAL BUG vs EXPECTED TRANSIENT (the judgment this suite encodes):
+Real bug vs expected transient (the judgment this suite encodes):
   * Data loss, corruption, a load path stuck at zero, non-convergence, or a
     survivor routing to a dead node *after* detection => REAL BUG. Fail hard.
   * R=1 briefly, a hit-rate dip, divergent ring views during a partition,
@@ -88,22 +88,19 @@ TOPOLOGY: list[Node] = [
 BY_ID = {n.node_id: n for n in TOPOLOGY}
 
 # --------------------------------------------------------------------------
-# Budgets. These mirror CLAUDE.md's "Architecture spine": detection floor is
-# dead_after=3000ms; the documented end-to-end recovery target is 3.5s
-# (3s detect + 500ms re-replicate). We assert a HARD ceiling well above the
-# target (clearly-broken => fail) and separately WARN if the 3.5s target was
-# missed — chasing the exact 3.5s edge is flaky and CLAUDE.md explicitly
-# warns against tightening to hit a number.
+# Budgets. Detection floor is dead_after=3000ms; the documented end-to-end
+# recovery target is 3.5s (3s detect + 500ms re-replicate). We assert a HARD
+# ceiling well above the target (clearly-broken => fail) and separately WARN
+# if the 3.5s target was missed — chasing the exact 3.5s edge is flaky.
 # --------------------------------------------------------------------------
 REPLICATION_FACTOR = 2
 HEARTBEAT_MS = 200
 DEAD_AFTER_MS = 3000
 DETECTION_BUDGET_MS = 4200  # epoch must bump within this of the kill
 
-# Recovery budget, RESTATED honestly in W11.1 (see docs/weekly/W11_1.md,
-# docs/DESIGN.md, docs/BENCHMARKS.md). The W0 spine's "3s detect + 500ms
-# re-replicate = 3.5s" was only ever true at tiny working sets. The W11.1
-# curve (docker bridge, fresh cluster, full R=2 reconvergence) measured:
+# Recovery budget. The "3s detect + 500ms re-replicate = 3.5s" target was
+# only ever true at tiny working sets. The measured curve (docker bridge,
+# fresh cluster, full R=2 reconvergence):
 #   200 blk -> 13.4s   500 -> 21.8s   1000 -> 22.0s   2000 -> 15.3s
 # i.e. recovery is ~13-22s and ROUGHLY FLAT across 200-2000 (re-replication
 # throughput scales with load: ~15 blk/s at N=200 up to ~131 blk/s at
@@ -119,9 +116,9 @@ RECOVERY_SLACK_MS = 6000
 
 
 def recovery_budget_ms(n_blocks: int) -> float:
-    """Honest recovery budget: detection + flat drain envelope + slack (+ a
-    small per-block hedge). Recovery is empirically ~flat in N, so the budget
-    is too — the N term only guards working sets past the measured range."""
+    """Recovery budget: detection + flat drain envelope + slack (+ a small
+    per-block hedge). Recovery is empirically ~flat in N, so the budget is
+    too — the N term only guards working sets past the measured range."""
     return (
         RECOVERY_DETECT_MS
         + RECOVERY_DRAIN_ENVELOPE_MS
@@ -133,16 +130,13 @@ def recovery_budget_ms(n_blocks: int) -> float:
 INV4_SETTLE_MS = DEAD_AFTER_MS + 1200  # after this, no stale RemoteHit
 
 # kBoundedScan in replication.cpp: re-replication dispatches at most this many
-# blocks PER sweep tick. Before W11.1 a single pass ran and nothing
-# re-triggered, so working sets > this stayed under-replicated forever
-# (Finding B). W11.1 wired a periodic sweep that drains successive batches
-# until the whole round is covered — completeness now holds at any size; the
-# cap only bounds per-tick work. The LARGE scenario below deliberately exceeds
-# it to prove the fix.
+# blocks PER sweep tick. A periodic sweep drains successive batches until the
+# whole round is covered, so completeness holds at any size; the cap only
+# bounds per-tick work. The LARGE scenario below deliberately exceeds it.
 REPLICATION_SCAN_CAP = 256
 
 CORPUS_SIZE = 48
-LARGE_CORPUS_SIZE = 600  # > REPLICATION_SCAN_CAP: the Finding B regression test
+LARGE_CORPUS_SIZE = 600  # > REPLICATION_SCAN_CAP: large-working-set regression test
 PAYLOAD_LEN = 256
 
 
@@ -214,7 +208,7 @@ class ClusterProbe:
         so the server's ReplicateOut pushes it to the correct replica and the
         block lands at the full R=2.
 
-        Inserting everything via one node (the W10 quick-load pattern) leaves
+        Inserting everything via one node (the quick-load pattern) leaves
         ~1/3 of blocks at R=1: for blocks where that node is the ring *replica*
         rather than the primary, ReplicateOut pushes only to replicas-minus-self
         and there is no other successor to push to. ReplicateOut itself flags
@@ -262,8 +256,7 @@ class ClusterProbe:
 
     def ring_hit_rate(self, corpus: dict[bytes, bytes]) -> float:
         """Ring-routed lookup of the whole corpus; returns hits/(hits+miss).
-        This is exactly the lethe_requests_total{result=hit} surface — the
-        load-bearing W9-lesson metric."""
+        This is exactly the lethe_requests_total{result=hit} surface."""
         ids = [BlockId(hash=h) for h in corpus]
         r = self.ring().lookup(ids, request_id="w11-hr")
         return r.hit_rate
@@ -292,8 +285,8 @@ class ClusterProbe:
         return self._scrape_gauge(node, "lethe_cluster_epoch")
 
     def scrape_under_target(self, node: Node) -> Optional[int]:
-        # W11.1: now a LIVE deficit (round.size - cursor), zeroed on
-        # reconvergence — usable as a cheap convergence signal.
+        # A live deficit (round.size - cursor), zeroed on reconvergence —
+        # usable as a cheap convergence signal.
         return self._scrape_gauge(node, "lethe_replicas_under_target")
 
     def sample_probe(self, corpus: dict[bytes, bytes], alive: list[Node],
@@ -497,8 +490,8 @@ def scenario_kill(
         )
 
     # INV-3: re-replication converged to R=2 across survivors within the
-    # size-aware honest budget (W11.1). A miss is a real regression now (the
-    # budget is measured, not cosmetic), so it FAILS and reports the residual.
+    # size-aware budget. A miss is a real regression (the budget is measured,
+    # not cosmetic), so it FAILS and reports the residual.
     if recovery_ms is None:
         res.add(
             "INV-3",
@@ -874,12 +867,11 @@ def scenario_packet_loss(
 
 
 # --------------------------------------------------------------------------
-# Scenario: LARGE working set (> kBoundedScan=256). This is the W11.1
-# Finding-B regression test: before the periodic-sweep fix, a single death
-# left the blocks beyond the 256-per-pass cap at R=1 forever. It must fully
-# reconverge to R=2 now. Recovery is polled cheaply via the now-live
-# replicas_under_target gauge + a sampled probe, then confirmed with a full
-# probe; the budget is size-aware (recovery scales with the working set).
+# Scenario: LARGE working set (> kBoundedScan=256). A single death must fully
+# reconverge to R=2 even for blocks beyond the 256-per-pass cap. Recovery is
+# polled cheaply via the live replicas_under_target gauge + a sampled probe,
+# then confirmed with a full probe; the budget is size-aware (recovery scales
+# with the working set).
 # --------------------------------------------------------------------------
 
 
@@ -942,7 +934,7 @@ def scenario_large(probe: ClusterProbe) -> ScenarioResult:
         not corruption,
         "no corruption" if not corruption else "CORRUPTION on large set",
     )
-    # INV-3: the Finding-B claim — FULL reconvergence beyond the 256 cap.
+    # INV-3: FULL reconvergence beyond the 256 cap.
     res.add(
         "INV-3",
         recovery_ms is not None and recovery_ms <= budget_ms and residual == 0,

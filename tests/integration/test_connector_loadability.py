@@ -1,4 +1,4 @@
-"""W1.1 acceptance: LetheCacheConnector loads through vLLM's factory.
+"""LetheCacheConnector loads through vLLM's factory.
 
 This test verifies that the connector class registered as
 ``lethe_client.vllm_hook:LetheCacheConnector`` is reachable through
@@ -7,9 +7,9 @@ that the Python module imports clean. Import-success is trivially
 passable by a class that vLLM would reject; the factory roundtrip is
 the actual integration surface.
 
-Skips when vllm is not installed (the W0 dev box doesn't have CUDA, so
-vllm isn't pip-installable there). CI nodes with vllm 0.19.1 installed
-must pass this test.
+Skips when vllm is not installed (no CUDA box, so vllm isn't
+pip-installable there). CI nodes with vllm 0.19.1 installed must pass
+this test.
 
 Reference: factory mechanism at ``factory.py:43-131`` of vllm 0.19.1
 (see ``docs/decisions/W1_vllm_pin.md`` for the pin rationale and line
@@ -26,8 +26,8 @@ vllm = pytest.importorskip(
     reason="vllm not installed; install with `pip install vllm==0.19.1`",
 )
 
-# These imports use the V1 namespace paths verified during W0 against
-# the vllm-0.19.1 source tarball. If a future vllm bump changes the
+# These imports use the V1 namespace paths verified against the
+# vllm-0.19.1 source tarball. If a future vllm bump changes the
 # layout, this test breaks loudly — that's the intended signal.
 from vllm.config import (  # noqa: E402  — after importorskip
     DeviceConfig,
@@ -64,8 +64,8 @@ def _make_vllm_config() -> VllmConfig:
 
 
 def test_pin_is_honored():
-    """W0 sanity: the test environment is pinned to the version we
-    actually inspected in the decision doc. If this fails, the pin in
+    """The test environment is pinned to the version we actually
+    inspected in the decision doc. If this fails, the pin in
     ``client/pyproject.toml`` and the line-citations in
     ``docs/decisions/W1_vllm_pin.md`` are out of sync with reality.
     """
@@ -97,19 +97,17 @@ def test_factory_loads_connector_worker_role():
 
 
 def test_abstract_methods_raise_with_subtask_label():
-    """W1.1 stubs must name the sub-task that fills them in. Catches the
-    'I'll get to that later' drift the user explicitly warned about.
-    """
+    """Guard against the connector methods regressing to stubs."""
     config = _make_vllm_config()
 
-    # W1.3 scheduler-side methods + W1.4 worker-side methods all landed
-    # for real. Their NotImplementedError markers are gone; the behavior
-    # is exercised end-to-end by tests/correctness/test_connector_
+    # The scheduler-side and worker-side methods are all implemented;
+    # their NotImplementedError markers are gone, and the behavior is
+    # exercised end-to-end by tests/correctness/test_connector_
     # scheduler.py (scheduler) and tests/correctness/test_token_
     # identical.py + test_save_load_byte_identical.py (worker).
-    # Asserting that they STAY implemented is more useful than asserting
-    # the gone stub messages — if a future commit accidentally reverts
-    # one to NotImplementedError, this catches it.
+    # Asserting they STAY implemented is more useful than asserting the
+    # gone stub messages — if a future commit accidentally reverts one
+    # to NotImplementedError, this catches it.
     sched = KVConnectorFactory.create_connector(config, KVConnectorRole.SCHEDULER)
     worker = KVConnectorFactory.create_connector(config, KVConnectorRole.WORKER)
 
@@ -153,7 +151,7 @@ def test_abstract_methods_raise_with_subtask_label():
 def test_extra_config_round_trip():
     """The connector should pick up extra_config values rather than
     falling back silently to defaults — silent fallbacks were the
-    failure mode that gave us the SHA-256 fallback bug in W0.
+    failure mode behind an earlier SHA-256 fallback bug.
     """
     config = _make_vllm_config()
     conn = KVConnectorFactory.create_connector(config, KVConnectorRole.SCHEDULER)
@@ -163,10 +161,9 @@ def test_extra_config_round_trip():
 
 
 def test_lethe_connector_metadata_is_a_real_subclass():
-    """Per W1 review: scheduler→worker metadata must be a real
-    subclass, not a dict-of-everything. The fields are pinned by the
-    test so a refactor that "loosens" the metadata into ``Any`` breaks
-    here.
+    """Scheduler→worker metadata must be a real subclass, not a
+    dict-of-everything. The fields are pinned by the test so a refactor
+    that "loosens" the metadata into ``Any`` breaks here.
     """
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (
         KVConnectorMetadata,

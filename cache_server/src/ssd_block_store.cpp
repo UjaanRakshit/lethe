@@ -1,24 +1,21 @@
-// Lethe — SSD block store (W7).
+// SSD block store.
 //
-// One mmap'd file per node. Slot-based allocator: every block lives in
-// exactly one slot, slots are fixed-size (default 64 KiB), header at the
-// start of the slot, payload follows.
+// One mmap'd file per node. Slot-based allocator: every block lives in exactly
+// one slot, slots are fixed-size (default 64 KiB), header at the start of the
+// slot, payload follows.
 //
-// Persistence model: NO fsync. Per the W0 design decision documented in
-// DESIGN.md "What's intentionally fragile" — host crash loses recently-
-// written SSD blocks; recovery falls back to recompute via the model
-// weights. The acceptance test is process-restart durability (kill -9
-// the cache server, restart, read the block back) — the page cache
-// keeps the bytes around for that. Host crash is a separate, harder
-// promise we explicitly don't make.
+// Persistence model: NO fsync (see DESIGN.md "What's intentionally fragile").
+// Host crash loses recently-written SSD blocks; recovery falls back to
+// recompute via the model weights. Durability is only over process restart
+// (kill -9, restart, read the block back) — the page cache keeps the bytes
+// around for that. Host crash is a separate, harder promise we don't make.
 //
-// Index rebuild on startup: scan every slot's header; if magic byte is
-// the live sentinel (0xA5), pull the BlockId into the in-memory index
-// and account the payload bytes. This is O(total_slots) at startup but
-// happens once per process lifetime. The torn-write window (header
-// partially written but magic not set) is invisible to us — those
-// slots come back as "free" on restart, which is correct: a block we
-// can't read intact is one we never had.
+// Index rebuild on startup: scan every slot's header; if the magic byte is the
+// live sentinel (0xA5), pull the BlockId into the in-memory index and account
+// the payload bytes. O(total_slots) but once per process lifetime. The
+// torn-write window (header partially written but magic not set) is invisible
+// to us — those slots come back as "free" on restart, which is correct: a
+// block we can't read intact is one we never had.
 
 #include "lethe/ssd_block_store.hpp"
 

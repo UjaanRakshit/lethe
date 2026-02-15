@@ -1,4 +1,4 @@
-"""Inject configurable packet loss into a Lethe node (W11).
+"""Inject configurable packet loss into a Lethe node.
 
 Preferred mechanism is tc/netem. But the WSL2 Docker kernel ships without
 `sch_netem` (no module, no modprobe), so `tc qdisc add ... netem` fails with

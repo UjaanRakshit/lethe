@@ -4,7 +4,7 @@ for every `(prev_hash, tokens)` input AND every `f"{peer}#{vn}"` ring key.
 
 If this regresses, the Python client will route to a different node than
 the C++ server expects, and the cluster will silently corrupt its prefix
-locality. This is the "mirror invariant" from client/CLAUDE.md.
+locality. This is the cross-language mirror invariant.
 
 How this test works:
   1. Compute digests in Python via `chained_block_hash` and the ring-key
@@ -16,9 +16,9 @@ How this test works:
   4. Pin the Python side to known BLAKE3 test vectors so that a missing
      C++ driver doesn't let a Python regression slip through unnoticed.
 
-When the C++ driver is missing (pre-W1, or `cmake` not run), this test
-asserts only the BLAKE3 reference vectors and emits a warning rather
-than passing silently. CI must run with the driver present.
+When the C++ driver is missing (`cmake` not run), this test asserts
+only the BLAKE3 reference vectors rather than passing silently. CI must
+run with the driver present.
 """
 from __future__ import annotations
 
@@ -35,9 +35,7 @@ from lethe_client.routing import HashRing, chained_block_hash, _HASH
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # The driver binary is built under cache_server/CMakeLists.txt and
-# lands at build/cache_server/hash_compat_driver. (Earlier scaffold
-# guessed build/tests/hash_compat_driver; corrected to the actual
-# build location.)
+# lands at build/cache_server/hash_compat_driver.
 DRIVER_PATH = REPO_ROOT / "build" / "cache_server" / "hash_compat_driver"
 
 
@@ -116,16 +114,16 @@ def test_cpp_python_chained_hash_agree():
     """Hand the C++ driver `(prev_hex tokens...)` lines on stdin; expect
     one hex digest per line back. Both sides must produce identical
     bytes — this is the load-bearing cross-language assertion."""
-    # ≥20 vectors per the W3-W4 acceptance: empty / single / multi-
-    # block sizes, block_size boundaries (1, 15, 16, 17, 32, 33),
-    # and large/edge uint32 token values. Each pair drives one
-    # chained_block_hash call (one block-worth of tokens).
+    # 20+ vectors: empty / single / multi-block sizes, block_size
+    # boundaries (1, 15, 16, 17, 32, 33), and large/edge uint32 token
+    # values. Each pair drives one chained_block_hash call (one
+    # block-worth of tokens).
     cases: list[tuple[bytes, list[int]]] = [
         # Empty + minimal.
         (bytes(32), []),
         (bytes(32), [0]),
         (bytes(32), [1]),
-        # Around the W1 block_size=16 boundary.
+        # Around the block_size=16 boundary.
         (bytes(32), list(range(1))),
         (bytes(32), list(range(15))),
         (bytes(32), list(range(16))),

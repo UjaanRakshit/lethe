@@ -1,7 +1,7 @@
-"""W4.J — Python multi-node integration against a real 3-node cluster.
+"""Python multi-node integration against a real 3-node cluster.
 
 Spawns three lethe_server subprocesses via ``scripts/run_3node.sh``,
-exercises the multi-node LetheClient from W4.I, asserts:
+exercises the multi-node LetheClient, asserts:
 
   * Per-primary RPC batching is real (not one RPC per block).
   * Cross-node Lookup works: insert N blocks across the cluster,
@@ -155,7 +155,7 @@ def test_cluster_comes_up(cluster):
 
 @requires_built
 def test_cross_node_lookup_remote_hit_fetches_transparently(cluster):
-    """W4.I core behavior: insert one block on node0; query from
+    """Core cross-node behavior: insert one block on node0; query from
     a LetheClient with all 3 peers configured. The client routes
     per-block via HashRing; if the primary isn't node0, the server
     on node0 returns RemoteHit and the client transparently fetches
@@ -205,9 +205,9 @@ def test_cross_node_lookup_remote_hit_fetches_transparently(cluster):
 
 @requires_built
 def test_per_primary_batching_uses_few_rpcs(cluster):
-    """The W4 spec says per-primary batching is non-optional:
-    long-context Lookups against a 3-node cluster should issue
-    ~3 RPCs (one per distinct primary), not N RPCs for N blocks.
+    """Per-primary batching is non-optional: long-context Lookups
+    against a 3-node cluster should issue ~3 RPCs (one per distinct
+    primary), not N RPCs for N blocks.
 
     We can't intercept gRPC calls at the LetheClient layer without
     a hook; the next-best signal is timing. With per-primary batching,

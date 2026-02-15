@@ -1,29 +1,22 @@
-// Lethe — metrics implementation (W10).
+// Metrics — hand-rolled Prometheus text-exposition exporter. prometheus-cpp
+// isn't packaged for Ubuntu 22.04 and building it from source pulls in
+// civetweb + a protobuf metrics path we don't need; our metric families are
+// simple and metrics.hpp is pimpl'd so the backend is an implementation
+// detail. See docs/DECISIONS.md (2026-05-28).
 //
-// Hand-rolled Prometheus text-exposition exporter. prometheus-cpp is
-// not packaged for Ubuntu 22.04 (no apt, no pkg-config, no vendored
-// copy), and building it from source pulls in civetweb + a protobuf
-// metrics path we don't need. The metric families here are simple
-// (counters, gauges, a few latency histograms), the exposition format
-// is trivial, and metrics.hpp is already pimpl'd so the backend is an
-// implementation detail. See docs/DECISIONS.md (2026-05-28).
+// Storage / synchronization: ALL metric state is std::atomic, so every Record*
+// call is lock-free and sub-microsecond — no mutex on the hot Lookup/Insert
+// path. The series are fixed and pre-created at construction, so Record*
+// updates a known member directly with no map lookup. The /metrics renderer
+// reads the atomics (relaxed); a scrape may see a momentarily-inconsistent
+// snapshot across series, which is fine for metrics.
 //
-// Storage / synchronization: ALL metric state is std::atomic, so every
-// Record* call is lock-free and sub-microsecond — no mutex on the hot
-// Lookup/Insert path (W10 stop-condition 3). The series are fixed and
-// pre-created at construction (op ∈ {lookup,insert,stream},
-// tier ∈ {hbm,dram,ssd}, etc.), so Record* updates a known member
-// directly with no map lookup. The /metrics renderer reads the atomics
-// (relaxed); a scrape may see a momentarily-inconsistent snapshot
-// across series, which is fine for metrics.
-//
-// HTTP: a single dedicated thread runs a minimal raw-POSIX-socket
-// server. It only answers GET /metrics (any path → the exposition);
-// no routing, no keep-alive. SO_RCVTIMEO on the listen socket makes
-// accept() wake periodically so Shutdown is responsive. Bind failure
-// (e.g. port already taken by a sibling node in a shared-host
-// multi-node test) is non-fatal: we log and the node runs without a
-// metrics endpoint rather than crashing.
+// HTTP: a single dedicated thread runs a minimal raw-POSIX-socket server. It
+// answers any GET path with the exposition; no routing, no keep-alive.
+// SO_RCVTIMEO on the listen socket makes accept() wake periodically so
+// Shutdown is responsive. Bind failure (e.g. a port taken by a sibling node in
+// a shared-host test) is non-fatal: we log and run without a metrics endpoint
+// rather than crashing.
 
 #include "lethe/metrics.hpp"
 

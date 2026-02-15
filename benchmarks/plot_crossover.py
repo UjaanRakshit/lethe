@@ -1,4 +1,4 @@
-"""Consolidate + plot the W12 capacity-crossover sweep.
+"""Consolidate + plot the capacity-crossover sweep.
 
 Reads W12_sweep_<CONFIG>_n<NDIST>_<REP>.json (written by crossover_sweep.py),
 takes the median over reps per (config, n_distinct), and writes:

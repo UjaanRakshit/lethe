@@ -1,4 +1,4 @@
-"""Network partition injection via iptables (W11).
+"""Network partition injection via iptables.
 
 Drops packets between two nodes for a configurable duration to simulate
 a split-brain scenario. Lethe should NOT proceed to elect a new owner

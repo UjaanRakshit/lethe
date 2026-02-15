@@ -1,36 +1,25 @@
 """gRPC client for the Lethe cache server.
 
-Thin wrapper over the generated lethe_pb2 / lethe_pb2_grpc stubs
-(produced by `scripts/build.sh`).
+Thin wrapper over the generated lethe_pb2 / lethe_pb2_grpc stubs. RPCs:
+Lookup (presence check), Insert (push blocks), Fetch (pull one block's
+bytes), StreamBlocks (bulk push, used by replication).
 
-The wire protocol is `proto/lethe.proto`. Targets:
-  * Lookup       — metadata-only check for cache presence.
-  * Insert       — push KV blocks into the cache.
-  * Fetch        — pull a single block's bytes.
-  * StreamBlocks — bulk push of blocks (used by W4+ replication).
+Single-node mode: pass `primary_address` only; every RPC hits that node.
 
-W1: single-node mode. Pass `primary_address` only; every RPC hits
-that one node.
+Multi-node mode: pass `peers=[(node_id, address), ...]`. The client builds
+a `HashRing` (bit-compatible with the C++ Router) and routes every Lookup
+per-block to its primary owner, batching block_ids that share a primary
+into one RPC. Inserts hit the local node only — the server-side Replicator
+handles cross-node pushes. On a RemoteHit response, the client
+transparently Fetches from source_node and stitches the bytes into the
+result.
 
-W4 multi-node: pass `peers=[(node_id, address), ...]`. The client
-builds a `HashRing` (bit-compatible with the C++ Router per the W0
-invariant) and routes every Lookup per-block to its primary owner,
-batching block_ids that share a primary into one RPC. Inserts hit
-the local node only — the server-side Replicator handles cross-node
-pushes. On a Lookup response that returns RemoteHit, the client
-transparently calls Fetch against the source_node and stitches the
-bytes into the result.
-
-Failure semantics (CLAUDE.md rule 2: never block scheduling on cache
-liveness):
-  * Transient gRPC errors (UNAVAILABLE / DEADLINE_EXCEEDED) retry up
-    to 3 times with 50 ms × 2^attempt backoff. Other status codes
-    surface as Miss for the affected blocks and do not raise.
-  * Cross-node Fetch failure during transparent fetch: the block is
-    reclassified as Miss; the connector / caller recomputes.
-  * The lookup / fetch APIs NEVER raise grpc.RpcError into the
-    caller. They always return a `LookupResult` (possibly with all
-    misses) or a bytes-or-None for fetch.
+Failure semantics (never block scheduling on cache liveness):
+transient gRPC errors (UNAVAILABLE / DEADLINE_EXCEEDED) retry up to 3
+times with 50 ms × 2^attempt backoff; other status codes surface as Miss.
+A cross-node Fetch failure reclassifies the block as Miss. lookup/fetch
+never raise grpc.RpcError — they return a LookupResult (possibly all
+misses) or bytes-or-None.
 """
 
 from __future__ import annotations
@@ -48,8 +37,8 @@ from .routing import HashRing
 logger = logging.getLogger(__name__)
 
 
-# Retry policy. Tuned per the W4 prompt: 3 attempts, 50 ms × 2^n
-# exponential, UNAVAILABLE-only. Other RPC failures fall through
+# Retry policy: 3 attempts, 50 ms × 2^n exponential backoff, retrying
+# only UNAVAILABLE / DEADLINE_EXCEEDED. Other RPC failures fall through
 # as Miss / None rather than raising into the connector's stack.
 _RETRY_CODES = {
     grpc.StatusCode.UNAVAILABLE,
@@ -80,9 +69,9 @@ class LookupHit:
 class LookupResult:
     hits: list[LookupHit] = field(default_factory=list)
     misses: list[BlockId] = field(default_factory=list)
-    # W4: when the client transparently fetches RemoteHit bytes, the
-    # payload lands here keyed by hash. None entries are blocks that
-    # were RemoteHit but the follow-up Fetch failed (treat as Miss).
+    # Transparently-fetched RemoteHit bytes, keyed by hash. None entries
+    # are blocks that were RemoteHit but whose follow-up Fetch failed
+    # (treat as Miss).
     fetched: dict[bytes, Optional[bytes]] = field(default_factory=dict)
 
     @property
@@ -116,7 +105,7 @@ class LetheClient:
     Single-node usage:
         LetheClient("127.0.0.1:50051")
 
-    Multi-node usage (W4):
+    Multi-node usage:
         LetheClient(
             primary_address="127.0.0.1:50051",  # any reachable node
             peers=[("node0", "127.0.0.1:50051"),
@@ -144,7 +133,7 @@ class LetheClient:
         self._stubs: dict[str, lethe_pb2_grpc.LetheCacheStub] = {}
         # HashRing built from the peer set. Empty peers → empty ring
         # → routing falls back to primary_address. The ring is
-        # bit-compatible with the C++ Router per the W0 invariant.
+        # bit-compatible with the C++ Router.
         self._ring: Optional[HashRing] = None
         if self.peers:
             self._ring = HashRing(list(self.peers.keys()))
@@ -181,14 +170,13 @@ class LetheClient:
     # ---- Retry helper ----------------------------------------------------
 
     def _call_with_retry(self, rpc_callable):
-        """Run an RPC closure with the W4 retry policy. Returns the
-        response on success; returns None on terminal failure (the
-        caller decides how to surface it — Miss for Lookup, None for
-        Fetch, etc.).
+        """Run an RPC closure with the retry policy. Returns the response
+        on success, None on terminal failure (the caller decides how to
+        surface it — Miss for Lookup, None for Fetch).
 
-        ``rpc_callable`` is a no-arg lambda that issues one RPC. It
-        may raise grpc.RpcError; the helper catches and either
-        retries (UNAVAILABLE / DEADLINE_EXCEEDED) or gives up.
+        ``rpc_callable`` is a no-arg lambda that issues one RPC; it may
+        raise grpc.RpcError, which the helper catches and either retries
+        (UNAVAILABLE / DEADLINE_EXCEEDED) or gives up on.
         """
         last_exc: Optional[Exception] = None
         for attempt in range(_MAX_ATTEMPTS):
@@ -302,11 +290,10 @@ class LetheClient:
                 )
                 result.hits.append(hit)
                 # If the server returned a remote hit, fetch the bytes
-                # from source_node so the caller doesn't have to.
-                # The server itself returns LocalHit when it has the
-                # bytes locally (after a successful read-repair too);
-                # RemoteHit only surfaces when the server can't serve
-                # the bytes itself.
+                # from source_node so the caller doesn't have to. The
+                # server returns LocalHit when it has the bytes locally
+                # (including after read-repair); RemoteHit only surfaces
+                # when it can't serve the bytes itself.
                 if h.source_node and h.source_node != self._local_label_for(stub):
                     self._fetch_into_result(hit.block_id, h.source_node, result)
             for m in resp.misses:

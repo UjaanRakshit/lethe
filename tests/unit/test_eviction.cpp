@@ -1,20 +1,16 @@
-// Lethe — Evictor SIEVE unit tests (W8).
-//
-// Standalone main()-with-asserts, per tests/CMakeLists.txt convention.
+// Evictor SIEVE unit tests. Standalone main()-with-asserts.
 //
 // Drives Evictor::RunPassForTier directly against a TieredStore filled
 // past its high watermark. Membership is null and broadcast_evictions
-// is off, so these tests exercise pure eviction logic without standing
-// up a cluster (BroadcastEvictionsToPeers early-returns on null
-// membership).
+// is off, so these exercise pure eviction logic without a cluster
+// (BroadcastEvictionsToPeers early-returns on null membership).
 //
 // Coverage:
-//   - No visited bits → eviction drains to below the low watermark and
-//     stops there (no over-eviction).
+//   - No visited bits → eviction drains below the low watermark and stops
+//     there (no over-eviction).
 //   - Visited bit gives a second chance: an all-visited tier still
 //     converges (bits cleared on the first sweep, victims taken on the
-//     second) — this is the SIEVE convergence guarantee that stop-
-//     condition #3 in the W8 prompt cares about.
+//     second) — the SIEVE convergence guarantee.
 //   - Cross-tier demotion: DRAM victims land in SSD (not dropped) when
 //     SSD has space.
 //   - SSD eviction is a hard drop (no slower tier).
@@ -93,9 +89,9 @@ void TestEvictsToLowWatermarkNoOverEvict() {
 }
 
 void TestAllVisitedStillConverges() {
-  // SIEVE convergence: if EVERY block is visited, the first sweep
-  // clears all bits (no eviction), the second sweep takes victims.
-  // The hand must not loop forever (stop-condition #3).
+  // SIEVE convergence: if every block is visited, the first sweep clears
+  // all bits (no eviction) and the second takes victims. The hand must
+  // not loop forever.
   TieredStoreConfig ts;
   ts.dram_bytes = 10 * 1000;
   ts.ssd_bytes = 0;

@@ -1,27 +1,25 @@
 #pragma once
-// Lethe — SSD-backed block store (W7).
+// SSD-backed block store.
 //
 // File-backed slot allocator on top of a single mmap'd region per node.
 // One 64 KiB slot per block (configurable); the slot header carries the
-// content hash + payload size + tier so we can rebuild the in-memory
-// index by scanning the file at startup. No fsync — host crash loses
-// recently-written SSD blocks, which is acceptable per the W0 design
-// (the source of truth is the model weights, which can recompute).
+// content hash + payload size + tier so we can rebuild the in-memory index
+// by scanning the file at startup. No fsync — a host crash loses
+// recently-written SSD blocks, which is acceptable: the source of truth is
+// the model weights, which can recompute.
 //
-// Threading: shared_mutex with the same reader-favored shape as
-// BlockStore. The mmap region itself is shared by all threads; each
-// slot's payload bytes are only mutated under the write lock during
-// Put/Erase.
+// Threading: shared_mutex with the same reader-favored shape as BlockStore.
+// The mmap region is shared by all threads; each slot's payload bytes are
+// only mutated under the write lock during Put/Erase.
 //
 // What this is NOT:
 //   - Not a real on-disk hash table. Index lookups happen against an
-//     in-memory unordered_map<BlockId, slot_index>. The index is
-//     reconstructed by scanning live slot headers at startup; the
-//     file format is "raw slot array" not "B-tree on disk."
-//   - Not fragmentation-resistant. The free list is a flat vector of
-//     freed slot indexes; allocator is bump-then-freelist. Workloads
-//     that churn many small blocks could fragment; if W11 chaos
-//     surfaces it we revisit. For W7 acceptance this is sufficient.
+//     in-memory unordered_map<BlockId, slot_index>, reconstructed by
+//     scanning live slot headers at startup; the file format is "raw slot
+//     array" not "B-tree on disk."
+//   - Not fragmentation-resistant. The free list is a flat vector of freed
+//     slot indexes; allocator is bump-then-freelist. Workloads that churn
+//     many small blocks could fragment; revisit if it ever surfaces.
 //   - Not durable through host crash. See above.
 
 #include <atomic>

@@ -1,20 +1,7 @@
-// Lethe — BlockStore unit test (W1).
-//
-// Covers:
-//   * Round-trip Put → Get → byte-identical readback.
-//   * Erase removes the block; subsequent Get returns nullopt.
-//   * Idempotent Put on the same id is a no-op for used_bytes.
-//   * Capacity overflow: Put returns false past capacity.
-//   * used_bytes accounting matches the sum of payload sizes exactly
-//     across any sequence of Put / Erase / Snapshot operations.
-//   * Concurrent Put / Get / Erase across N threads converges on the
-//     correct final used_bytes and produces no crash or data race
-//     (TSan-clean by construction; build with -DLETHE_ENABLE_TSAN=ON).
-//   * Explicit local_data lifetime contract:
-//       Put → Get(span) → capture bytes → Erase → Get returns nullopt
-//       and the captured copy still matches what we read pre-Erase.
-//
-// Standalone main()-with-asserts; ported to GoogleTest in W3+.
+// BlockStore unit test. Covers Put/Get/Erase round-trips, idempotent Put,
+// capacity overflow, used_bytes accounting, the local_data lifetime
+// contract, and concurrent access (build with -DLETHE_ENABLE_TSAN=ON to
+// catch races). Standalone main()-with-asserts.
 
 #include "lethe/block_store.hpp"
 #include "lethe/types.hpp"
@@ -154,10 +141,9 @@ void TestUsedBytesAccountingMixed() {
 }
 
 void TestLocalDataLifetimeContract() {
-  // The contract: Get returns a span valid until the next mutating call
-  // on this BlockId. The test demonstrates the SHIM pattern: copy the
-  // span into a buffer BEFORE any mutation, then verify the captured
-  // buffer's content is correct independent of the cache state.
+  // Get returns a span valid until the next mutating call on this BlockId.
+  // Copy the span into a buffer before any mutation, then verify the copy
+  // is correct independent of cache state.
 
   BlockStore store(Tier::DRAM, 1ULL << 20);
   KvBlock blk = MakeBlock(42, 1024, 0xAA);
@@ -168,22 +154,18 @@ void TestLocalDataLifetimeContract() {
   auto span_or = store.Get(id);
   assert(span_or.has_value());
 
-  // Step 1: capture bytes from the span IMMEDIATELY. This is exactly
-  // what the gRPC shim in main.cpp does in LookupServiceImpl::Lookup
-  // before returning to the gRPC layer.
+  // Capture bytes from the span immediately, mirroring what the gRPC
+  // lookup handler does before returning to the gRPC layer.
   std::vector<std::byte> captured(span_or->begin(), span_or->end());
 
-  // Step 2: trigger a mutation on this id — Erase invalidates the
-  // underlying KvBlock and therefore the span.
+  // Erase invalidates the underlying KvBlock and therefore the span.
   const std::size_t freed = store.Erase(id);
   assert(freed == 1024);
   assert(!store.Get(id).has_value());
 
-  // Step 3: the captured copy is independent of cache state. After
-  // Erase, span_or's bytes are formally UB to read — but the copy
-  // we made before the mutation is fine, and its content matches the
-  // pre-Erase data byte-for-byte. This is what the gRPC shim's
-  // "copy into wire response immediately" pattern relies on.
+  // The captured copy is independent of cache state: reading span_or's
+  // bytes after Erase is UB, but the pre-mutation copy still matches the
+  // original byte-for-byte.
   assert(captured.size() == expected.size());
   for (std::size_t i = 0; i < captured.size(); ++i) {
     assert(captured[i] == expected[i]);

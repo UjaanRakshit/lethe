@@ -1,4 +1,4 @@
-"""W9 child script: single-engine role-sequenced disaggregation driver.
+"""Single-engine role-sequenced disaggregation driver.
 
 Spawned as a subprocess by tests/correctness/test_disagg_token_identical.py
 so the vLLM engine is isolated per run.
@@ -10,10 +10,10 @@ Modes:
                      (import KV from Lethe), and report the decode-phase
                      Lethe hit count + a direct round-trip Lookup.
 
-Both modes build the engine with enable_prefix_caching=False so vLLM's
+vanilla/disagg build the engine with enable_prefix_caching=False so vLLM's
 native prefix cache cannot serve the second pass — Lethe is the only
-external KV path. greedy / seed=42 / enforce_eager / bfloat16, matching
-the W1.4 determinism recipe.
+external KV path. greedy / seed=42 / enforce_eager / bfloat16 for
+determinism.
 
 Prints ONE JSON document on stdout at the end (parent reads the last
 JSON-looking line).
@@ -27,10 +27,10 @@ import sys
 import time
 
 os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
-# Per the W9 prompt. On Ada (sm_89) vLLM has no general force-determinism
-# kernel path (VLLM_BATCH_INVARIANT needs sm_90+); determinism here comes
-# from greedy + seed + enforce_eager + one-prompt-per-generate. Setting
-# this is harmless and documents intent.
+# On Ada (sm_89) vLLM has no general force-determinism kernel path
+# (VLLM_BATCH_INVARIANT needs sm_90+); determinism here comes from
+# greedy + seed + enforce_eager + one-prompt-per-generate. Setting this
+# is harmless and documents intent.
 os.environ.setdefault("VLLM_FORCE_DETERMINISTIC", "1")
 # Run the engine core (scheduler) + worker IN THIS PROCESS. vLLM v1
 # defaults to a multiprocess engine where the connector instances live
@@ -49,7 +49,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
 sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
-from _run_vllm_for_w14 import PROMPTS  # noqa: E402  shared 10-prompt set
+from _run_vllm_for_w14 import PROMPTS  # noqa: E402  shared prompt set
 
 
 def build_engine(mode: str, lethe_address: str, block_size: int,
@@ -63,8 +63,8 @@ def build_engine(mode: str, lethe_address: str, block_size: int,
         block_size=block_size,
         seed=seed,
         # native prefix cache OFF for vanilla/disagg (Lethe is the only
-        # external-cache path); ON for the rule-2 "native" control so it
-        # serves the prefix as a cache HIT on the same schedule as disagg.
+        # external-cache path); ON for the "native" control so it serves
+        # the prefix as a cache HIT on the same schedule as disagg.
         enable_prefix_caching=(mode == "native"),
     )
     if mode == "disagg":
@@ -97,13 +97,13 @@ def run_vanilla(llm: LLM, max_tokens: int) -> list[dict]:
 
 
 def run_native(llm: LLM, max_tokens: int) -> list[dict]:
-    """Rule-2 control: vLLM's OWN prefix cache serves the prefix on the
-    SAME hit/miss schedule as disagg. Two phases per prompt mirroring
-    run B: a warm-up generate (max_tokens=1) populates the native cache
-    with P's prefix, then a decode generate hits it. This is the
-    apples-to-apples comparison for CLAUDE.md rule 2 — "same set of
-    cache hits vs misses" — whereas vanilla full-recompute is on the
-    other side of the cache boundary.
+    """Control: vLLM's own prefix cache serves the prefix on the same
+    hit/miss schedule as disagg. Two phases per prompt mirroring disagg:
+    a warm-up generate (max_tokens=1) populates the native cache with
+    P's prefix, then a decode generate hits it. This is the
+    apples-to-apples comparison ("same set of cache hits vs misses"),
+    whereas vanilla full-recompute is on the other side of the cache
+    boundary.
     """
     warm = SamplingParams(temperature=0.0, max_tokens=1, seed=42)
     decode = SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=42)
@@ -138,9 +138,9 @@ def run_disagg(llm: LLM, lethe_address: str, block_size: int,
         hashes = seq.prefix_block_hashes(prefill.prompt_token_ids)
         store_log = list(vllm_hook.WORKER_STORE_LOG)
 
-        # --- Round-trip probe (acceptance B): does Lethe contain P's
-        # blocks after prefill? Probe layer=0 (the connector's scheduler
-        # presence-probe key) AND the REAL layer_ids the save path used
+        # --- Round-trip probe: does Lethe contain P's blocks after
+        # prefill? Probe layer=0 (the connector's scheduler
+        # presence-probe key) AND the real layer_ids the save path used
         # (from WORKER_STORE_LOG), so we can tell whether the
         # presence-probe scheme matches what save_kv_layer stored.
         probe_layer0 = [BlockId(hash=h, layer=0, head_group=0, model_id=0)

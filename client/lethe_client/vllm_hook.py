@@ -1,7 +1,7 @@
 """vLLM ↔ Lethe integration — LetheCacheConnector.
 
-Targets vllm 0.19.1 exactly (see ``docs/decisions/W1_vllm_pin.md``).
-Subclasses ``vllm.distributed.kv_transfer.kv_connector.v1.base.KVConnectorBase_V1``
+Targets vllm 0.19.1 exactly. Subclasses
+``vllm.distributed.kv_transfer.kv_connector.v1.base.KVConnectorBase_V1``
 (``base.py:170``); the factory at ``kv_connector/factory.py:43`` instantiates
 us twice per engine — once with ``KVConnectorRole.SCHEDULER`` and once with
 ``KVConnectorRole.WORKER``.
@@ -20,17 +20,11 @@ Loading from a vLLM CLI / SDK call (out-of-tree path,
         }
     }'
 
-The seven abstract methods are stubbed in this file; each
-``NotImplementedError`` names the W1 sub-task that will implement it,
-so the dependency graph between sub-tasks lives in the code itself
-rather than in a planning document that can rot.
-
-Correctness invariant (CLAUDE.md rule 2, restated): with this connector
-enabled, model outputs must be token-for-token identical to vanilla vLLM
-on the *same hit/miss schedule* — not bit-identical across the
-cache-hit/cache-miss boundary, which is unwinnable on GPU due to
-non-associative FP reductions in attention. The W1.4 token-identical
-test asserts the equivalence-on-fixed-schedule version.
+Correctness invariant: with this connector enabled, model outputs must be
+token-for-token identical to vanilla vLLM on the *same hit/miss schedule*
+— not bit-identical across the cache-hit/cache-miss boundary, which is
+unwinnable on GPU due to non-associative FP reductions in attention. The
+token-identical test asserts the equivalence-on-fixed-schedule version.
 """
 
 from __future__ import annotations
@@ -67,30 +61,29 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# W9 diagnostic instrumentation (observability only — does NOT change any
+# Diagnostic instrumentation (observability only — does NOT change any
 # save/load/lookup behavior or method signatures).
 # ---------------------------------------------------------------------------
 #
 # The scheduler-role connector appends one entry per
-# get_num_new_matched_tokens call here. The W9 disaggregation test reads
-# this in-process (the connector lives in the same process as the engine
-# driver) to confirm the decode phase actually matched blocks in Lethe —
-# i.e. that a token-identical pass is green because Lethe served the KV,
-# not because vLLM recomputed everything (a false green). The W9 prompt
-# explicitly asks for this hit count.
+# get_num_new_matched_tokens call here. The disaggregation test reads this
+# in-process (the connector lives in the same process as the engine driver)
+# to confirm the decode phase actually matched blocks in Lethe — i.e. that
+# a token-identical pass is green because Lethe served the KV, not because
+# vLLM recomputed everything (a false green).
 #
 # Reset by the test between phases via SCHEDULER_LOOKUP_LOG.clear().
 SCHEDULER_LOOKUP_LOG: list[dict] = []
 
 # Worker-side store log (observability only). save_kv_layer appends one
-# entry per insert batch so the W9 diagnostic can confirm the prefill
-# phase actually stored blocks, and under WHICH (layer_id) key — needed
-# to ground-truth the scheduler-probe-vs-store keying. No behavior change.
+# entry per insert batch so the diagnostic can confirm the prefill phase
+# actually stored blocks, and under WHICH (layer_id) key — needed to
+# ground-truth the scheduler-probe-vs-store keying.
 WORKER_STORE_LOG: list[dict] = []
 
 # Coarse method-call counters (observability only) to pin down exactly
-# which connector hooks vLLM invokes and what they produced. Lets the
-# W9 diagnostic localize where the save/load chain breaks.
+# which connector hooks vLLM invokes and what they produced, localizing
+# where the save/load chain breaks.
 CALL_COUNTERS: dict[str, int] = {}
 
 
@@ -104,7 +97,7 @@ def _bump(name: str, n: int = 1) -> None:
 
 # torch dtype ↔ numpy dtype mapping for the dtypes we'll actually see in
 # KV cache (Gemma-3-1B is fp16 by default; bf16 added because Llama
-# defaults to bf16 and may surface in W2+ benchmarks).
+# defaults to bf16 and may surface in benchmarks).
 _TORCH_TO_NUMPY: dict[torch.dtype, np.dtype] = {
     torch.float16: np.dtype(np.float16),
     torch.float32: np.dtype(np.float32),
@@ -172,7 +165,7 @@ def _layer_id_for(layer_name: str) -> int:
     )
 
 
-# W9 presence-marker scheme. The scheduler-side get_num_new_matched_tokens
+# Presence-marker scheme. The scheduler-side get_num_new_matched_tokens
 # detects whether a prefix block is cached by probing Lethe with
 # BlockId(layer=_PRESENCE_LAYER). But the actual per-layer KV is stored
 # under layer=_layer_id_for(layer_name) (non-zero), and the C++
@@ -182,8 +175,7 @@ def _layer_id_for(layer_name: str) -> int:
 # into the KV cache (start_load_kv fetches the real per-layer blocks);
 # it exists solely so the scheduler can answer "is this prefix cached?"
 # Without it the load path never fires and the disaggregated decode
-# silently recomputes the whole prefix (the W1.4 false green that W9's
-# hit-count gate surfaced).
+# silently recomputes the whole prefix.
 _PRESENCE_LAYER = 0
 _PRESENCE_MARKER = b"\x01"
 
@@ -229,9 +221,9 @@ class LetheConnectorMetadata(KVConnectorMetadata):
 
     Produced by ``LetheCacheConnector.build_connector_meta`` (scheduler
     role) and consumed by ``start_load_kv`` / ``save_kv_layer`` (worker
-    role). All fields are explicitly typed; this is the W1 contract
-    between roles and should not grow opaque ``dict[str, Any]``
-    payloads without a corresponding decision-doc entry.
+    role). All fields are explicitly typed; this is the contract between
+    roles and should not grow opaque ``dict[str, Any]`` payloads without a
+    corresponding decision-doc entry.
     """
 
     # Requests whose KV blocks should be loaded FROM Lethe into the
@@ -305,7 +297,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         #
         #   - LetheClient is sync-shaped (grpcio sync stubs). Wrapping
         #     it in asyncio would force every connector caller to be
-        #     async-aware — out of proportion for W1.
+        #     async-aware — out of proportion here.
         #   - threading is the minimum-surface-area async shim. grpc
         #     Channels are thread-safe, so worker threads can issue
         #     concurrent RPCs against the shared client.
@@ -313,9 +305,8 @@ class LetheCacheConnector(KVConnectorBase_V1):
         #     small-block per-RPC means we're more latency-bound than
         #     throughput-bound, so a larger pool would help marginally
         #     at the cost of more thread overhead.
-        #   - W6 RDMA generalizes via the same Future.result()
-        #     contract, so the executor stays even when RDMA replaces
-        #     gRPC underneath.
+        #   - RDMA generalizes via the same Future.result() contract, so
+        #     the executor stays even when RDMA replaces gRPC underneath.
         self._executor: ThreadPoolExecutor | None = None
         if role is KVConnectorRole.WORKER:
             self._executor = ThreadPoolExecutor(
@@ -524,7 +515,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         if kv_cache_layer is None:
             return
         # In some vLLM configurations kv_cache is a per-virtual-engine
-        # list; pick index 0 (we don't drive multi-VE in W1).
+        # list; pick index 0 (we don't drive multi-VE).
         if isinstance(kv_cache_layer, list):
             kv_cache_layer = kv_cache_layer[0]
 
@@ -712,8 +703,8 @@ class LetheCacheConnector(KVConnectorBase_V1):
                     model_id=self._model_id,
                 )
                 insert_batch.append((block_id, block_bytes))
-                # W9 presence marker (see _PRESENCE_LAYER docstring). One
-                # tiny block per chained_hash at layer=0 so the scheduler's
+                # Presence marker (see _PRESENCE_LAYER comment). One tiny
+                # block per chained_hash at layer=0 so the scheduler's
                 # layer=0 presence probe can detect this block is cached.
                 # Idempotent across the model's layers — every layer's
                 # save_kv_layer appends the same marker BlockId, and the
@@ -741,10 +732,10 @@ class LetheCacheConnector(KVConnectorBase_V1):
         with self._inflight_saves_lock:
             self._inflight_saves.append(future)
 
-        # W9 diagnostic (observability only): record what we stored and
-        # under which layer_id, so the disagg test can ground-truth that
-        # the prefill phase saved blocks and confirm the keying. Records
-        # the chained-hash hex prefixes for the first few blocks.
+        # Diagnostic (observability only): record what we stored and under
+        # which layer_id, so the disagg test can ground-truth that the
+        # prefill phase saved blocks and confirm the keying. Records the
+        # chained-hash hex prefixes for the first few blocks.
         WORKER_STORE_LOG.append({
             "layer_name": layer_name,
             "layer_id": layer_id,
@@ -786,7 +777,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
 
         Returns ``(new_tokens, False)`` — the ``False`` declares that
         Lethe loads are synchronous (worker-side ``start_load_kv``
-        blocks). W6 flips this to ``True`` once RDMA-backed transfer
+        blocks). This flips to ``True`` once RDMA-backed transfer
         produces real futures.
 
         Threading: called by the scheduler from a single thread per
@@ -806,7 +797,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
 
         # Compute the chained block hashes for the prefix. This mirrors
         # the C++ server's hash chain bit-for-bit
-        # (lethe_client/routing.py::chained_block_hash, BLAKE3).
+        # (routing.py::chained_block_hash, BLAKE3).
         block_hashes: list[bytes] = []
         running = b"\x00" * 32
         for i in range(n_blocks):
@@ -816,9 +807,9 @@ class LetheCacheConnector(KVConnectorBase_V1):
             block_hashes.append(running)
 
         # Batch into one Lookup RPC. All blocks for one prefix route to
-        # the same primary per the W0 routing policy (BlockId.layer is
-        # not in the hash) so the batched RPC is the natural shape.
-        # W1 single-node: layer=0 is fine as a presence probe.
+        # the same primary (BlockId.layer is not in the routing hash) so
+        # the batched RPC is the natural shape. layer=0 is the presence
+        # probe.
         probe_ids = [
             BlockId(
                 hash=h,
@@ -880,9 +871,9 @@ class LetheCacheConnector(KVConnectorBase_V1):
         if hit_tokens >= num_prompt_tokens:
             hit_tokens = max(0, hit_tokens - self._block_size)
 
-        # W9 diagnostic: record the lookup outcome so the disagg test can
+        # Diagnostic: record the lookup outcome so the disagg test can
         # confirm the decode phase matched blocks in Lethe. Append-only;
-        # the test clears the log between phases. No behavior change.
+        # the test clears the log between phases.
         SCHEDULER_LOOKUP_LOG.append({
             "request_id": request.request_id,
             "n_blocks_probed": n_blocks,
@@ -921,9 +912,9 @@ class LetheCacheConnector(KVConnectorBase_V1):
             return
 
         # KVCacheBlocks.get_block_ids() returns ``tuple[list[int], ...]``
-        # — outer tuple is per KV-cache-group. W1 single-group assumption;
+        # — outer tuple is per KV-cache-group. We assume a single group;
         # heterogeneous block sizes per group are an HMA concern
-        # (SupportsHMA mixin) and out of W1 scope.
+        # (SupportsHMA mixin) and out of scope.
         block_id_groups = blocks.get_block_ids()
         if not block_id_groups or not block_id_groups[0]:
             return
@@ -957,11 +948,10 @@ class LetheCacheConnector(KVConnectorBase_V1):
         as we consume them — a second call on the same scheduler_output
         sees no pending loads.
 
-        W1 store policy: every newly-scheduled request stores every
+        Store policy: every newly-scheduled request stores every
         whole-block of its prompt that ISN'T being loaded. Cold-prefilled
-        requests store everything; partially-warm requests store only
-        the new (post-load) blocks. W4+ may add per-block hit-skip and
-        replication wave-shaping.
+        requests store everything; partially-warm requests store only the
+        new (post-load) blocks.
         """
         meta = LetheConnectorMetadata(block_size=self._block_size)
         _bump("build_connector_meta")

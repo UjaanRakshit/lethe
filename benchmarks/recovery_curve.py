@@ -6,9 +6,9 @@ anywhere the server binary builds. Routed R=2 insert, hard-kill one node
 at R=2, record wall-clock from kill to full reconvergence; restart the victim
 between reps. Median over REPS per working-set size.
 
-This is the W12 PACE-loopback measurement: 3.7 s @ 200 blocks ... 12.0 s @ 2000
-(see docs/weekly/W12.md). The docker-bridge variant (W11.1) is slower because
-of fixed per-RPC bridge latency; the chaos harness covers that path.
+PACE-loopback reference: 3.7 s @ 200 blocks ... 12.0 s @ 2000. The
+docker-bridge variant is slower because of fixed per-RPC bridge latency; the
+chaos harness covers that path.
 
 Env: LETHE_SERVER_BIN (default build/cache_server/lethe_server under the repo).
 """
