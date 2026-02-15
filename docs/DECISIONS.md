@@ -1182,3 +1182,46 @@ alternative — quietly switching to "vLLM with prefix cache OFF" so Lethe
 
 **Cross-references.** `docs/weekly/W12.md` (results + caveat);
 `docs/BENCHMARKS.md` (measured numbers replace the earlier estimates).
+
+## 2026-05-29 — W12.2: RDMA implemented on InfiniBand; Send-only scope; honest Phase-3 stop
+
+**Context.** W5-6 shipped the `KvTransport` abstraction with `IbverbsTransport`
+as an abort-stub (WSL2 had no IB subsystem). PACE ICE has real ConnectX-7
+InfiniBand, so W12.2 implemented the real transport.
+
+**Decision 1 — rdma_cm, not a hand-built QP state machine.** IPoIB is present
+on PACE (ib0 has an IP), so `rdma_resolve_addr/route` derive the IB path, GID,
+and MTU. On InfiniBand those are the error-prone parts of a manual QP bring-up
+(the canonical silent-hang source); letting rdma_cm own them traded a small
+dependency for much less risk. Two-sided SEND/RECV for data (no remote-addr
+exchange, unlike one-sided WRITE/READ).
+
+**Decision 2 — RDMA on the push path only; Fetch delegates to gRPC.** `Send`
+(replication, re-replication, prefill→decode) is throughput-critical and gets
+RDMA. `Fetch` (read-repair pull) would require the block store inside the
+transport to answer a remote fetch; rather than thread the store through the
+transport, `IbverbsTransport::Fetch` delegates to an internal
+`GrpcStreamTransport`. Honest consequence: the vLLM connector loads KV via
+*pull*, so this Send-only RDMA does **not** accelerate the connector's load
+latency — closing the TTFT gap would need RDMA on the fetch path too.
+
+**Decision 3 — stop Phase 3 at the connection failure rather than fake a
+number.** The 2-node throughput microbench didn't produce output before the
+SSH ControlMaster degraded; the bigger-model TTFT was independently blocked
+(connector KV-layout forces 1B + Send-only RDMA doesn't touch the load path).
+So W12.2 claims "RDMA implemented and functionally validated on IB" (real:
+R=2 replication + failover recovery, 0 corruption/0 loss, TSan-clean data
+path) and does **not** claim a measured RDMA-vs-gRPC throughput speedup or any
+latency win. The fabric ceiling (`ib_write_bw` 11.4 GiB/s) is reported as the
+raw-tool number, attributed as such.
+
+**Two ibverbs bugs worth remembering.** (a) 16 MiB × dozens of registered
+buffers × 3 procs pinned ~9 GiB → OOM; fix = 1 MiB default buffers,
+env-overridable. (b) `rnr_retry_count` unset → a re-replication burst exhausted
+the receiver's posted RECVs → RNR NAK errored the QP → 24/60 blocks stuck; fix
+= `rnr_retry_count=7` both ends.
+
+**Cross-references.** `cache_server/src/ibverbs_transport.cpp`;
+`cache_server/src/cache.cpp` (LETHE_USE_RDMA factory + on_receive→Insert);
+`cache_server/CMakeLists.txt`; `docs/weekly/W12_2.md`;
+`docs/decisions/W5_rdma_fallback.md` (the stub this replaces).

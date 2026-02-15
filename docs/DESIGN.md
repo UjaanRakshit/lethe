@@ -114,9 +114,18 @@ for a demo / interview project).
 Lookup, Insert, Heartbeat, EvictBroadcast — gRPC. They're small and
 latency-tolerant.
 
-StreamBlocks — RDMA via SoftRoCE. KV blocks are large (MBs each at long
-context) and the transfer is throughput-critical. If RDMA setup blows the
-W5–6 budget, fall back to gRPC streaming with the same interface.
+KV block transfer — RDMA. KV blocks are large (MBs each at long context) and
+the transfer is throughput-critical. W5–6 shipped the `KvTransport`
+abstraction with gRPC streaming as the working data path (WSL2 had no
+InfiniBand subsystem, so SoftRoCE was unavailable). **W12.2 implemented the
+real `IbverbsTransport` on PACE InfiniBand (ConnectX-7): rdma_cm connection
+setup, one RC queue pair per peer, two-sided SEND/RECV for the push path,
+per-connection completion polling.** It is functionally validated (R=2
+replication + failover recovery, zero corruption/loss, TSan-clean) and
+selected at runtime by `LETHE_USE_RDMA`; the gRPC path remains the default.
+The push (`Send`) is on RDMA; `Fetch` (read-repair pull) delegates to gRPC.
+The abstraction made the swap a single new file plus the factory — exactly
+its purpose. See docs/weekly/W12_2.md and docs/decisions/W5_rdma_fallback.md.
 
 ### 7. Tiered HBM/DRAM/SSD storage
 
