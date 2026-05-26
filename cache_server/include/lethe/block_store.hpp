@@ -38,7 +38,7 @@ class BlockStore {
   std::size_t capacity_bytes() const noexcept { return capacity_bytes_; }
   std::size_t used_bytes() const noexcept;
 
-  // Metadata snapshot — used by the evictor to pick victims.
+  // Metadata snapshot - used by the evictor to pick victims.
   std::vector<BlockMeta> Snapshot() const;
 
   Tier tier() const noexcept { return tier_; }

@@ -1,4 +1,4 @@
-"""Disaggregated prefill/decode — single-engine role sequencing.
+"""Disaggregated prefill/decode - single-engine role sequencing.
 
 HONEST SCOPE NOTE. This is NOT physical two-instance disaggregation
 (separate prefill and decode GPU workers). It is ONE vLLM engine driven
@@ -11,17 +11,17 @@ in two role-sequenced phases against a Lethe cluster:
     pulls them into the paged-KV buffer, and decode proceeds WITHOUT
     recomputing the prefix.
 
-The KV genuinely round-trips through Lethe between the phases — that is
+The KV genuinely round-trips through Lethe between the phases - that is
 the disaggregated KV TRANSPORT PATH being validated. Physical worker
 separation (two engines, two GPUs) is deferred until hardware with
 48-80 GB VRAM makes a real prefill/decode split trivial. Until then,
 naming things "prefill_worker process" / "decode_worker process" would
-be dishonest — there is one process, one engine, two phases.
+be dishonest - there is one process, one engine, two phases.
 
 CRITICAL CONFIG. The engine MUST be built with
 `enable_prefix_caching=False`. With native prefix caching ON, vLLM would
 cache P's KV after phase 1 and serve phase 2 from its own cache, so the
-decode phase would never touch Lethe — a false green. Disabling it makes
+decode phase would never touch Lethe - a false green. Disabling it makes
 Lethe the only external-cache path. (Verified in vllm 0.19.1: the
 scheduler calls the connector's get_num_new_matched_tokens whenever a
 connector is configured and the request has zero locally-computed
@@ -79,7 +79,7 @@ class RoleSequencedDisagg:
 
         max_tokens: vLLM 0.19.1 requires max_tokens >= 1 (a 0-token
         SamplingParams is rejected at validation). We use 1 and discard
-        the single decoded token — the prefill computes (and the
+        the single decoded token - the prefill computes (and the
         connector saves) the WHOLE prompt's KV regardless of how many
         tokens we then decode. The saved KV is the prompt prefix, which
         is all the decode phase needs.

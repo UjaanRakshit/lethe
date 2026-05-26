@@ -61,7 +61,7 @@ def _ring_key_digest(peer: str, vnode: int) -> bytes:
 
 
 def test_blake3_reference_vectors_match():
-    """Python side is pinned to upstream BLAKE3 vectors — failures here
+    """Python side is pinned to upstream BLAKE3 vectors - failures here
     mean the `blake3` package changed under us."""
     for data, expected_hex in BLAKE3_REFERENCE_VECTORS:
         got = _HASH(data).digest().hex()
@@ -89,7 +89,7 @@ def test_chained_block_hash_is_stable():
 
 def test_hashring_ring_key_is_stable():
     """Ring-key format must stay `f"{peer}#{vn}"` UTF-8 little-endian
-    uint64 — if anything in HashRing changes, the test fails before a
+    uint64 - if anything in HashRing changes, the test fails before a
     real C++ comparison even runs."""
     ring = HashRing(peers=["node0", "node1"], vnodes_per_peer=4)
     # The first virtual node of node0 should match the formula directly.
@@ -113,7 +113,7 @@ def test_hashring_ring_key_is_stable():
 def test_cpp_python_chained_hash_agree():
     """Hand the C++ driver `(prev_hex tokens...)` lines on stdin; expect
     one hex digest per line back. Both sides must produce identical
-    bytes — this is the load-bearing cross-language assertion."""
+    bytes - this is the load-bearing cross-language assertion."""
     # 20+ vectors: empty / single / multi-block sizes, block_size
     # boundaries (1, 15, 16, 17, 32, 33), and large/edge uint32 token
     # values. Each pair drives one chained_block_hash call (one

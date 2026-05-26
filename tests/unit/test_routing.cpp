@@ -21,7 +21,7 @@
 #include <cstring>
 #include <random>
 #include <string>
-#include <unistd.h>  // for ::write, ::close — used by the popen driver harness
+#include <unistd.h>  // for ::write, ::close - used by the popen driver harness
 #include <unordered_map>
 #include <vector>
 
@@ -160,7 +160,7 @@ std::uint64_t le_u64_from_hex_prefix(const std::string& hex64) {
 std::string run_driver_ring_key(const std::string& driver_path,
                                 const std::string& peer, std::uint32_t vn) {
   // Pipe "<peer> <vn>\n" to driver --mode=ring_key, read one hex
-  // digest back. popen-w to send stdin, popen-r to read stdout —
+  // digest back. popen-w to send stdin, popen-r to read stdout -
   // do both via a pipe pair. Simplest portable form: write input
   // to a temp file, redirect stdin from it.
   char tmpl[] = "/tmp/lethe-hashcompat-XXXXXX";

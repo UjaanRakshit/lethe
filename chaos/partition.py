@@ -47,7 +47,7 @@ def partition(a: str, b: str):
 def heal(a: str, b: str):
     # Idempotent / best-effort: `iptables -D` exits non-zero if the rule is
     # absent (already healed, or never injected). Deleting a missing rule is
-    # not an error for us, so swallow it — this lets invariants.py call heal()
+    # not an error for us, so swallow it - this lets invariants.py call heal()
     # unconditionally in a finally / restore step.
     for src, dst in ((a, b), (b, a)):
         subprocess.run(

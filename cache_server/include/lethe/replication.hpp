@@ -48,7 +48,7 @@ class Replicator {
   void TriggerReReplication(const std::vector<std::string>& lost_peers);
 
   // Connection pool management. Delegates to the underlying KvTransport
-  // (each transport implementation manages its own per-peer state —
+  // (each transport implementation manages its own per-peer state -
   // gRPC channels for GrpcStreamTransport, RC QPs for IbverbsTransport).
   // These remain on Replicator's public surface because LetheCache's
   // ctor uses them to pre-populate the pool from the static seed list

@@ -1,0 +1,100 @@
+{
+  "title": "Lethe - Distributed KV Cache",
+  "uid": "lethe-main",
+  "editable": true,
+  "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cache hit rate",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "sum(rate(lethe_requests_total{result=\"hit\"}[1m])) / clamp_min(sum(rate(lethe_requests_total{op=\"lookup\"}[1m])), 1)"}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Cluster epoch",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "lethe_cluster_epoch"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Under-replicated blocks",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [
+        {"color": "green", "value": null}, {"color": "red", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "lethe_replicas_under_target"}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Lookup latency p50/p99",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "histogram_quantile(0.5, rate(lethe_op_latency_seconds_bucket{op=\"lookup\"}[1m]))", "legendFormat": "p50"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "histogram_quantile(0.99, rate(lethe_op_latency_seconds_bucket{op=\"lookup\"}[1m]))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Tier usage (bytes)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "lethe_tier_bytes{state=\"used\"}", "legendFormat": "{{tier}} {{instance}}"}
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Stream throughput (bytes/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "Bps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "rate(lethe_stream_bytes_total[1m])", "legendFormat": "{{instance}}"}
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Cache hit rate over time",
+      "type": "timeseries",
+      "description": "The W9-lesson panel: a flat-zero line here means the load/hit path is dead. Watch this first.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "sum(rate(lethe_requests_total{result=\"hit\"}[1m])) / clamp_min(sum(rate(lethe_requests_total{op=\"lookup\"}[1m])), 1)", "legendFormat": "hit rate"}
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "version": 2
+}

@@ -32,7 +32,7 @@ enum class StreamPurpose : std::uint8_t {
   Promotion = 2,         // tier promotion from another node's hotter copy
 };
 
-// 32-byte content hash. BLAKE3 — see DESIGN.md §1. The C++ and Python
+// 32-byte content hash. BLAKE3 - see DESIGN.md §1. The C++ and Python
 // implementations of `chained_block_hash` MUST produce identical bytes for
 // the same `(prev_hash, tokens)`.
 using Hash256 = std::array<std::byte, 32>;
@@ -41,8 +41,8 @@ using Hash256 = std::array<std::byte, 32>;
 //
 // Routing note: the consistent-hash router (see routing.hpp) hashes
 // `hash` and `hash` only. `layer`, `head_group`, and `model_id` are
-// disambiguators for the in-memory store map — they keep KV bytes for
-// different layers from colliding under the same content key — but they
+// disambiguators for the in-memory store map - they keep KV bytes for
+// different layers from colliding under the same content key - but they
 // do NOT participate in routing. All layers of one prefix block therefore
 // share a primary owner. This is intentional: it preserves
 // "blocks sharing a primary → single Lookup RPC" batching.
@@ -55,7 +55,7 @@ struct BlockId {
   bool operator==(const BlockId&) const noexcept = default;
 };
 
-// Hash functor for unordered containers. NOT a content hash — this is an
+// Hash functor for unordered containers. NOT a content hash - this is an
 // in-memory combiner over the already-strong BLAKE3 content digest plus
 // the (layer, head_group, model_id) disambiguators. The two language
 // runtimes do not need to agree on this.
@@ -63,7 +63,7 @@ struct BlockIdHash {
   std::size_t operator()(const BlockId& b) const noexcept {
     std::size_t h;
     std::memcpy(&h, b.hash.data(), sizeof(h));
-    // boost-style hash_combine — order-sensitive, unlike a bare XOR.
+    // boost-style hash_combine - order-sensitive, unlike a bare XOR.
     auto combine = [](std::size_t& seed, std::size_t v) noexcept {
       seed ^= v + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2);
     };
@@ -74,7 +74,7 @@ struct BlockIdHash {
   }
 };
 
-// A materialized KV block — owned bytes + identity + tier of origin.
+// A materialized KV block - owned bytes + identity + tier of origin.
 struct KvBlock {
   BlockId id;
   std::vector<std::byte> data;

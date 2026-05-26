@@ -2,7 +2,7 @@
 
 This test verifies that the connector class registered as
 ``lethe_client.vllm_hook:LetheCacheConnector`` is reachable through
-vLLM's normal ``KVConnectorFactory.create_connector`` path — not just
+vLLM's normal ``KVConnectorFactory.create_connector`` path - not just
 that the Python module imports clean. Import-success is trivially
 passable by a class that vLLM would reject; the factory roundtrip is
 the actual integration surface.
@@ -27,8 +27,8 @@ vllm = pytest.importorskip(
 
 # These imports use the V1 namespace paths verified against the
 # vllm-0.19.1 source tarball. If a future vllm bump changes the
-# layout, this test breaks loudly — that's the intended signal.
-from vllm.config import (  # noqa: E402  — after importorskip
+# layout, this test breaks loudly - that's the intended signal.
+from vllm.config import (  # noqa: E402  - after importorskip
     DeviceConfig,
     KVTransferConfig,
     VllmConfig,
@@ -103,7 +103,7 @@ def test_abstract_methods_raise_with_subtask_label():
     # scheduler.py (scheduler) and tests/correctness/test_token_
     # identical.py + test_save_load_byte_identical.py (worker).
     # Asserting they STAY implemented is more useful than asserting the
-    # gone stub messages — if a future commit accidentally reverts one
+    # gone stub messages - if a future commit accidentally reverts one
     # to NotImplementedError, this catches it.
     sched = KVConnectorFactory.create_connector(config, KVConnectorRole.SCHEDULER)
     worker = KVConnectorFactory.create_connector(config, KVConnectorRole.WORKER)
@@ -133,7 +133,7 @@ def test_abstract_methods_raise_with_subtask_label():
                     method(**call_args)
                 else:
                     method(*call_args)
-            except NotImplementedError as e:  # pragma: no cover — sentinel
+            except NotImplementedError as e:  # pragma: no cover - sentinel
                 pytest.fail(
                     f"{method_name} regressed to NotImplementedError({e!r}); "
                     f"{side_label} implementations should remain in place"
@@ -147,7 +147,7 @@ def test_abstract_methods_raise_with_subtask_label():
 
 def test_extra_config_round_trip():
     """The connector should pick up extra_config values rather than
-    falling back silently to defaults — silent fallbacks were the
+    falling back silently to defaults - silent fallbacks were the
     failure mode behind an earlier SHA-256 fallback bug.
     """
     config = _make_vllm_config()

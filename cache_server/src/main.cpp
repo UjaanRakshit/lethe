@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
   }
   cfg.seed_peers = ParsePeerList(peers_spec, cfg.node_id);
 
-  // Keep capacity defaults small enough to fit on a laptop — default builds
+  // Keep capacity defaults small enough to fit on a laptop - default builds
   // shouldn't grab 32 GiB of host RAM.
   cfg.dram_bytes = 1ULL << 30;   // 1 GiB
   // Enable a modest SSD tier by default so demotion paths get exercised by

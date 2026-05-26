@@ -1,11 +1,11 @@
-// Metrics — hand-rolled Prometheus text-exposition exporter. prometheus-cpp
+// Metrics - hand-rolled Prometheus text-exposition exporter. prometheus-cpp
 // isn't packaged for Ubuntu 22.04 and building it from source pulls in
 // civetweb + a protobuf metrics path we don't need; our metric families are
 // simple and metrics.hpp is pimpl'd so the backend is an implementation
 // detail.
 //
 // Storage / synchronization: ALL metric state is std::atomic, so every Record*
-// call is lock-free and sub-microsecond — no mutex on the hot Lookup/Insert
+// call is lock-free and sub-microsecond - no mutex on the hot Lookup/Insert
 // path. The series are fixed and pre-created at construction, so Record*
 // updates a known member directly with no map lookup. The /metrics renderer
 // reads the atomics (relaxed); a scrape may see a momentarily-inconsistent
@@ -253,7 +253,7 @@ struct Metrics::Impl {
     while (running.load(std::memory_order_acquire)) {
       int c = ::accept(listen_fd, nullptr, nullptr);
       if (c < 0) continue;  // timeout (EAGAIN) or interrupted → re-check running
-      // Drain the request (we don't parse it — any GET gets the exposition).
+      // Drain the request (we don't parse it - any GET gets the exposition).
       char buf[2048];
       ::recv(c, buf, sizeof(buf), 0);
       const std::string body = render();

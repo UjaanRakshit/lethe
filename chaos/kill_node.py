@@ -1,4 +1,4 @@
-"""Chaos harness — kill nodes in a running Lethe cluster.
+"""Chaos harness - kill nodes in a running Lethe cluster.
 
 Usage:
     python -m chaos.kill_node \
@@ -46,7 +46,7 @@ def revive(target: str, mode: str) -> None:
 
 def is_running(target: str) -> bool:
     """True iff the container exists and is in the `running` state. A paused
-    container reports `paused`, a sigkilled/stopped one `exited` — both are
+    container reports `paused`, a sigkilled/stopped one `exited` - both are
     not-running for our purposes (the restore step start/unpauses them)."""
     out = subprocess.run(
         ["docker", "inspect", "-f", "{{.State.Running}}", target],

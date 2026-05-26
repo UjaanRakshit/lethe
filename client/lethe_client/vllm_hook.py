@@ -1,9 +1,9 @@
-"""vLLM ↔ Lethe integration — LetheCacheConnector.
+"""vLLM ↔ Lethe integration - LetheCacheConnector.
 
 Targets vllm 0.19.1 exactly. Subclasses
 ``vllm.distributed.kv_transfer.kv_connector.v1.base.KVConnectorBase_V1``
 (``base.py:170``); the factory at ``kv_connector/factory.py:43`` instantiates
-us twice per engine — once with ``KVConnectorRole.SCHEDULER`` and once with
+us twice per engine - once with ``KVConnectorRole.SCHEDULER`` and once with
 ``KVConnectorRole.WORKER``.
 
 Loading from a vLLM CLI / SDK call (out-of-tree path,
@@ -22,7 +22,7 @@ Loading from a vLLM CLI / SDK call (out-of-tree path,
 
 Correctness invariant: with this connector enabled, model outputs must be
 token-for-token identical to vanilla vLLM on the *same hit/miss schedule*
-— not bit-identical across the cache-hit/cache-miss boundary, which is
+- not bit-identical across the cache-hit/cache-miss boundary, which is
 unwinnable on GPU due to non-associative FP reductions in attention. The
 token-identical test asserts the equivalence-on-fixed-schedule version.
 """
@@ -61,14 +61,14 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Diagnostic instrumentation (observability only — does NOT change any
+# Diagnostic instrumentation (observability only - does NOT change any
 # save/load/lookup behavior or method signatures).
 # ---------------------------------------------------------------------------
 #
 # The scheduler-role connector appends one entry per
 # get_num_new_matched_tokens call here. The disaggregation test reads this
 # in-process (the connector lives in the same process as the engine driver)
-# to confirm the decode phase actually matched blocks in Lethe — i.e. that
+# to confirm the decode phase actually matched blocks in Lethe - i.e. that
 # a token-identical pass is green because Lethe served the KV, not because
 # vLLM recomputed everything (a false green).
 #
@@ -77,7 +77,7 @@ SCHEDULER_LOOKUP_LOG: list[dict] = []
 
 # Worker-side store log (observability only). save_kv_layer appends one
 # entry per insert batch so the diagnostic can confirm the prefill phase
-# actually stored blocks, and under WHICH (layer_id) key — needed to
+# actually stored blocks, and under WHICH (layer_id) key - needed to
 # ground-truth the scheduler-probe-vs-store keying.
 WORKER_STORE_LOG: list[dict] = []
 
@@ -112,7 +112,7 @@ def _tensor_to_bytes(t: torch.Tensor) -> bytes:
 
     Synchronous on purpose: ``save_kv_layer`` must capture the bytes
     BEFORE returning, because the paged-KV buffer can be overwritten
-    by the next layer's forward — and the connector's executor would
+    by the next layer's forward - and the connector's executor would
     otherwise race against that overwrite.
     """
     if t.dtype is torch.bfloat16:
@@ -128,7 +128,7 @@ def _bytes_to_tensor(
     device: torch.device,
 ) -> torch.Tensor:
     """Inverse of ``_tensor_to_bytes``. The caller supplies the
-    expected shape/dtype/device — we don't trust wire bytes alone.
+    expected shape/dtype/device - we don't trust wire bytes alone.
     """
     np_dtype = _TORCH_TO_NUMPY.get(dtype)
     if np_dtype is None:
@@ -138,7 +138,7 @@ def _bytes_to_tensor(
     expected_bytes = int(np.prod(shape)) * np_dtype.itemsize
     if len(payload) != expected_bytes:
         raise ValueError(
-            f"Lethe: KV payload size mismatch — got {len(payload)} bytes, "
+            f"Lethe: KV payload size mismatch - got {len(payload)} bytes, "
             f"expected {expected_bytes} for shape={shape} dtype={dtype}. "
             f"This usually means the model config drifted between save and "
             f"load runs, or a layer's KV shape changed."
@@ -169,7 +169,7 @@ def _layer_id_for(layer_name: str) -> int:
 # detects whether a prefix block is cached by probing Lethe with
 # BlockId(layer=_PRESENCE_LAYER). But the actual per-layer KV is stored
 # under layer=_layer_id_for(layer_name) (non-zero), and the C++
-# BlockIdHash keys on layer — so a layer=0 probe could never match the
+# BlockIdHash keys on layer - so a layer=0 probe could never match the
 # real KV blocks. save_kv_layer therefore ALSO writes a tiny presence
 # marker per block at layer=_PRESENCE_LAYER. The marker is never loaded
 # into the KV cache (start_load_kv fetches the real per-layer blocks);
@@ -191,7 +191,7 @@ class LetheBlockSpec:
 
     Mirrors the C++ ``lethe::BlockId`` plus where the block lives in the
     vLLM-allocated paged-KV block table for the request. Explicit fields
-    on purpose — the scheduler↔worker boundary is wire-format-adjacent
+    on purpose - the scheduler↔worker boundary is wire-format-adjacent
     and fuzzy schemas there cost more to debug than they save.
     """
 
@@ -246,7 +246,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
     """vLLM V1 KV transfer connector backed by a Lethe cluster.
 
     Constructor signature MUST match ``KVConnectorBase_V1.__init__``
-    exactly (base.py:183-207) — the factory at ``factory.py:77-82``
+    exactly (base.py:183-207) - the factory at ``factory.py:77-82``
     invokes us positionally. Connector-specific configuration is read
     from ``vllm_config.kv_transfer_config.kv_connector_extra_config``
     (a plain ``dict``); no kwargs smuggling.
@@ -297,7 +297,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         #
         #   - LetheClient is sync-shaped (grpcio sync stubs). Wrapping
         #     it in asyncio would force every connector caller to be
-        #     async-aware — out of proportion here.
+        #     async-aware - out of proportion here.
         #   - threading is the minimum-surface-area async shim. grpc
         #     Channels are thread-safe, so worker threads can issue
         #     concurrent RPCs against the shared client.
@@ -320,7 +320,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         self._inflight_loads: dict[tuple[str, int, int], Future] = {}
         self._inflight_loads_lock = threading.Lock()
 
-        # In-flight save futures. List, not dict — we don't need
+        # In-flight save futures. List, not dict - we don't need
         # individual lookup, just a batch drain in wait_for_save.
         self._inflight_saves: list[Future] = []
         self._inflight_saves_lock = threading.Lock()
@@ -527,7 +527,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
                 f"save_kv_layer's matching shape comment."
             )
         page_size = kv_cache_layer.shape[2]
-        # Per-block shape mirrors save_kv_layer's derivation — n-D
+        # Per-block shape mirrors save_kv_layer's derivation - n-D
         # trailing dims kept verbatim.
         per_block_shape = (2, page_size) + tuple(kv_cache_layer.shape[3:])
         device = kv_cache_layer.device
@@ -610,7 +610,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         try:
             metadata = self._get_connector_metadata()
         except AssertionError:
-            # No metadata bound for this forward — nothing to save.
+            # No metadata bound for this forward - nothing to save.
             _bump("save_no_metadata")
             return
         if not isinstance(metadata, LetheConnectorMetadata):
@@ -623,8 +623,8 @@ class LetheCacheConnector(KVConnectorBase_V1):
         # Layer shape: leading 2 is K|V, dim 1 is num_pages, dim 2 is
         # page_size, then a model-specific tail. In vllm 0.19.1 the
         # tail is (num_kv_heads, head_size) for GQA models like
-        # Gemma-3 — empirically (2, 9872, 16, 1, 256) for Gemma-3-1B
-        # — and a single flattened dim for some other backends. We
+        # Gemma-3 - empirically (2, 9872, 16, 1, 256) for Gemma-3-1B
+        # - and a single flattened dim for some other backends. We
         # don't assume a specific number of trailing dims; we slice
         # kv_layer[:, vllm_blk, ...] and serialize the per-block
         # subtensor whole. The reference example_connector docstring
@@ -706,7 +706,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
                 # Presence marker (see _PRESENCE_LAYER comment). One tiny
                 # block per chained_hash at layer=0 so the scheduler's
                 # layer=0 presence probe can detect this block is cached.
-                # Idempotent across the model's layers — every layer's
+                # Idempotent across the model's layers - every layer's
                 # save_kv_layer appends the same marker BlockId, and the
                 # server dedups by BlockId, so only the first lands.
                 marker_id = BlockId(
@@ -757,7 +757,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         for fut in futures:
             try:
                 fut.result(timeout=30.0)
-            except Exception as e:  # noqa: BLE001 — grpc raises a wide tree
+            except Exception as e:  # noqa: BLE001 - grpc raises a wide tree
                 logger.warning(
                     "Lethe: save Insert failed (not re-raised): %s",
                     e,
@@ -775,7 +775,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         """Count external KV cache tokens available beyond what vLLM
         already has locally.
 
-        Returns ``(new_tokens, False)`` — the ``False`` declares that
+        Returns ``(new_tokens, False)`` - the ``False`` declares that
         Lethe loads are synchronous (worker-side ``start_load_kv``
         blocks). This flips to ``True`` once RDMA-backed transfer
         produces real futures.
@@ -790,7 +790,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
             return (0, False)
 
         # Lethe addresses by whole blocks. Partial trailing tokens
-        # become a separate request concern — they get recomputed.
+        # become a separate request concern - they get recomputed.
         n_blocks = len(token_ids) // self._block_size
         if n_blocks == 0:
             return (0, False)
@@ -821,7 +821,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         ]
 
         # Graceful degradation: if the cache is unreachable, fall back
-        # to "no hits" — never block scheduling on cache liveness.
+        # to "no hits" - never block scheduling on cache liveness.
         try:
             client = self._ensure_client()
             result = client.lookup(
@@ -829,7 +829,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
                 request_id=request.request_id,
                 requesting_node="lethe-scheduler",
             )
-        except Exception as e:  # noqa: BLE001 — grpc raises a wide tree
+        except Exception as e:  # noqa: BLE001 - grpc raises a wide tree
             logger.warning(
                 "Lethe lookup failed; falling back to cold-cache scheduling. "
                 "request_id=%s lethe_address=%s err_type=%s err=%s",
@@ -841,7 +841,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
             return (0, False)
 
         # Count contiguous hits from the START of the prefix.
-        # A hit at block index 5 with a miss at index 3 doesn't help —
+        # A hit at block index 5 with a miss at index 3 doesn't help -
         # vLLM needs contiguous prefix to load any of it.
         hit_set: set[bytes] = {bytes(h.block_id.hash) for h in result.hits}
         contiguous_hits = 0
@@ -865,7 +865,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         # engine. vLLM's own native prefix cache holds back the last
         # block for exactly this reason; we mirror it. This only bites
         # when num_prompt_tokens is an exact multiple of block_size AND
-        # every block hit — otherwise the trailing partial block is
+        # every block hit - otherwise the trailing partial block is
         # always computed and >=1 token already remains.
         num_prompt_tokens = len(token_ids)
         if hit_tokens >= num_prompt_tokens:
@@ -887,7 +887,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
         # usually a superset of vLLM's local prefix cache. In practice
         # the two caches can diverge (Lethe may evict before vLLM does,
         # or vice versa), and a negative return would corrupt scheduler
-        # state — vLLM stores the value into ``num_external_computed_
+        # state - vLLM stores the value into ``num_external_computed_
         # tokens`` and feeds it into a sum (scheduler.py:642). Clamp to
         # 0 and continue; tests/correctness/test_connector_scheduler.py::
         # test_get_num_clamps_negative forces the divergent case.
@@ -912,7 +912,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
             return
 
         # KVCacheBlocks.get_block_ids() returns ``tuple[list[int], ...]``
-        # — outer tuple is per KV-cache-group. We assume a single group;
+        # - outer tuple is per KV-cache-group. We assume a single group;
         # heterogeneous block sizes per group are an HMA concern
         # (SupportsHMA mixin) and out of scope.
         block_id_groups = blocks.get_block_ids()
@@ -945,7 +945,7 @@ class LetheCacheConnector(KVConnectorBase_V1):
             "calling this function will reset the state of the
              connector"
         We honor that by ``pop``-ing entries out of ``_requests_need_load``
-        as we consume them — a second call on the same scheduler_output
+        as we consume them - a second call on the same scheduler_output
         sees no pending loads.
 
         Store policy: every newly-scheduled request stores every

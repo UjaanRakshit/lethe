@@ -3,7 +3,7 @@
 // Composes HBM + DRAM (in-memory BlockStore) + SSD (SsdBlockStore,
 // mmap-backed). Tier-aware Get/Put/Demote/Erase. Promotion on Get when
 // access_counts_[id] crosses the configured threshold AND the faster tier has
-// space (best-effort — no eviction triggering from here; the Evictor handles
+// space (best-effort - no eviction triggering from here; the Evictor handles
 // capacity pressure).
 //
 // Threading: access_counts_ has its own shared_mutex. Each underlying
@@ -116,7 +116,7 @@ std::optional<GetResult> TieredStore::Get(const BlockId& id) {
 
   bool promoted = false;
   // Promote on the leading edge: when count >= threshold AND we're not
-  // already at HBM AND the faster tier has space. Best-effort — if the
+  // already at HBM AND the faster tier has space. Best-effort - if the
   // faster tier's Put returns false (capacity exhausted), we leave the
   // block where it is. Eviction will eventually free space.
   if (cfg_.enable_promotion &&
@@ -134,7 +134,7 @@ std::optional<GetResult> TieredStore::Get(const BlockId& id) {
     if (target != found) {
       KvBlock promo;
       promo.id = id;
-      promo.data = bytes;  // copy — we still return the original bytes
+      promo.data = bytes;  // copy - we still return the original bytes
       promo.tier = target;
       // Set inserted_epoch from the existing snapshot if available; we
       // don't have it cheaply here, so leave it 0. Promotion isn't a
@@ -159,7 +159,7 @@ std::optional<GetResult> TieredStore::Get(const BlockId& id) {
 
 std::optional<Tier> TieredStore::Put(KvBlock block, Tier hint) {
   // Try the hinted tier first; fall through to slower tiers if it's
-  // full or doesn't exist. We never fall UP — the hint is a maximum
+  // full or doesn't exist. We never fall UP - the hint is a maximum
   // "where the caller thinks this block should land" and the policy
   // is to demote on pressure, not promote on insert.
   static constexpr Tier kFallthrough[3][3] = {
@@ -191,7 +191,7 @@ bool TieredStore::Demote(const BlockId& id) {
       blk.tier = Tier::DRAM;
       // Drop from HBM first to free its capacity, then attempt the
       // DRAM Put. If the DRAM Put fails (DRAM also full), the block is
-      // lost — caller (Evictor) should have checked DRAM space first.
+      // lost - caller (Evictor) should have checked DRAM space first.
       if (!PutToTier(std::move(blk), Tier::DRAM)) {
         // DRAM full. Try SSD before giving up.
         KvBlock blk2;

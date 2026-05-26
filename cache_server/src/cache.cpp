@@ -5,7 +5,7 @@
 // Routing semantics:
 //   - Insert: write LOCALLY first, ACK to caller. If we're primary, kick off
 //     async ReplicateOut to the R-1 successors. Inserts on a non-primary node
-//     still write locally — the client routes to the primary, but the proto
+//     still write locally - the client routes to the primary, but the proto
 //     allows out-of-band Inserts and we accept them.
 //   - Lookup: per-block routing. Local hit short-circuits even on a replica
 //     (free hit). Otherwise RemoteHit pointing at primary, or Miss if there's
@@ -47,7 +47,7 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   ts.ssd_path = cfg_.ssd_path;
   store_ = std::make_unique<TieredStore>(std::move(ts));
 
-  // Router needs the FULL cluster peer set including the local node —
+  // Router needs the FULL cluster peer set including the local node -
   // otherwise IsLocalPrimary / IsLocalReplica never return true here and
   // Lookup's route-aware branch (and TriggerReReplication's "we_in_route"
   // heuristic) never fire. main.cpp's --peers parser strips self from the
@@ -70,11 +70,9 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   }
 
   // Transport is built BEFORE Replicator (Replicator delegates all
-  // peer-to-peer block movement through KvTransport). The dev kernel has no
-  // infiniband subsystem, so GrpcStreamTransport is the default data path.
-  // IbverbsTransport still exists but is a defined-symbol stub that aborts if
-  // constructed; the factory below never picks it because RdmaIsAvailable() is
-  // always-false without real hardware.
+  // peer-to-peer block movement through KvTransport). GrpcStreamTransport is
+  // the default; IbverbsTransport (RDMA) is selected at runtime by
+  // LETHE_USE_RDMA when the binary is built with -DLETHE_ENABLE_RDMA=ON.
   RdmaConfig rdma_cfg;
   rdma_cfg.device_name = cfg_.rdma_device;
   rdma_cfg.listen_port = cfg_.rdma_port;
@@ -83,7 +81,7 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   // binary serves the gRPC-vs-RDMA A/B benchmark. RDMA receives don't flow
   // through the gRPC service handlers, so the transport gets an on_receive
   // callback that lands a pushed block exactly as the gRPC Insert handler
-  // would — same Insert() path, same idempotent re-replication bounce.
+  // would - same Insert() path, same idempotent re-replication bounce.
   if (std::getenv("LETHE_USE_RDMA") != nullptr) {
     transport_ = std::make_unique<IbverbsTransport>(
         rdma_cfg,
@@ -104,7 +102,7 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   }
   transport_->Start();
 
-  // Metrics is a leaf — everyone records, no one reads. Construct it before
+  // Metrics is a leaf - everyone records, no one reads. Construct it before
   // the subsystems that record into it (Replicator, Membership, Evictor). Its
   // ctor spawns the /metrics HTTP thread on cfg_.metrics_port; bind failure is
   // non-fatal (see metrics.cpp), so a shared-host multi-node test with
@@ -112,7 +110,7 @@ LetheCache::LetheCache(CacheConfig cfg) : cfg_(std::move(cfg)) {
   //
   // Gated on LETHE_ENABLE_METRICS (CMake option, default ON). When OFF the
   // flag is undefined, metrics_ stays null, and every Record* call is a no-op
-  // via its `if (metrics_)` guard — the hot path pays nothing. Unit tests link
+  // via its `if (metrics_)` guard - the hot path pays nothing. Unit tests link
   // cache.cpp without the flag, so they skip the HTTP server (test_metrics.cpp
   // drives Metrics directly).
 #ifdef LETHE_ENABLE_METRICS
@@ -171,7 +169,7 @@ void LetheCache::Start() {
 
 void LetheCache::Shutdown() {
   if (!running_.exchange(false)) return;  // already stopped
-  // Reverse of Start. Evictor first (joins its tier threads) — those
+  // Reverse of Start. Evictor first (joins its tier threads) - those
   // threads can call into Membership::AllPeerAddresses during a
   // final pass, so Membership stays alive. Then Membership
   // (joins heartbeat thread). Then close transport channels.
@@ -193,7 +191,7 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
     e.id = id;
 
     // Try the local store first. A LocalHit short-circuits even if this node
-    // isn't the primary — having the bytes locally beats a network
+    // isn't the primary - having the bytes locally beats a network
     // round-trip. Get returns OWNED bytes because the SSD tier can't lend
     // spans safely; move them straight into the entry.
     if (auto got = store_->Get(id); got.has_value()) {
@@ -227,7 +225,7 @@ LookupResult LetheCache::Lookup(const std::vector<BlockId>& ids,
       // The right place for read-repair is the chunk-level bulk-pull path
       // (StreamBlocks), where the hit-rate justifies it and the budget
       // tolerates the extra hop. The route-aware miss handling below stays
-      // intact — we still return RemoteHit so the client can route correctly.
+      // intact - we still return RemoteHit so the client can route correctly.
 
       // Not in the route (e.g. client's ring was stale during a
       // membership change). Report RemoteHit pointing at the primary
@@ -275,13 +273,13 @@ std::uint32_t LetheCache::Insert(std::vector<KvBlock> blocks,
   LatencyTimer timer;
   // Async replication + tier-aware insert: write locally first (using blk.tier
   // as the hint, defaulting to DRAM) → ACK → kick off background ReplicateOut.
-  // opts.sync_replicate is accepted but unimplemented; replication is async by
-  // default.
+  // Replication is always async (write locally, ACK, replicate in the
+  // background); opts.sync_replicate is accepted for API symmetry but ignored.
   //
   // "Accepted" semantics: counts NEWLY-INSERTED blocks. A Put against an
   // already-present BlockId is idempotent (content-addressed; same hash → same
   // bytes) and counts as 0, NOT 1 (test_repeated_insert_is_idempotent enforces
-  // this). We detect newness by total-used-bytes delta across all tiers — Put
+  // this). We detect newness by total-used-bytes delta across all tiers - Put
   // can land a new block in any tier per the fallthrough chain, so we sum the
   // deltas rather than watching one tier.
   auto total_used = [&]() -> std::size_t {

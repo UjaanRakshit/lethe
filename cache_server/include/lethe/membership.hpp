@@ -50,21 +50,21 @@ struct PeerInfo {
   // Startup race guard: at process start other nodes' gRPC servers may not
   // be listening yet, so the first several heartbeats can fail. Without a
   // guard, EvaluateSuspicions would declare every peer dead within
-  // dead_after of start. We skip peers whose ever_seen is false — "alive by
+  // dead_after of start. We skip peers whose ever_seen is false - "alive by
   // assumption" until first proven otherwise. First successful contact in
   // either direction (outbound reply OR inbound OnHeartbeat) flips ever_seen
   // true and starts the dead_after clock.
   bool ever_seen = false;
 };
 
-// Defaults are deliberately conservative — `dead_after=3000ms` makes false
+// Defaults are deliberately conservative - `dead_after=3000ms` makes false
 // positives vanishingly rare under stop-the-world pauses, GC spikes, and
 // link blips, at the cost of slow detection.
 //
 // Recovery budget: the recovery-time goal is 3.5s end-to-end = `dead_after`
 // (3000ms) + re-replication (~500ms). The chaos suite may tighten these for
 // failover micro-benchmarks, but do NOT tighten these defaults to chase a
-// number — for a 3-node cluster the false-positive risk dominates the
+// number - for a 3-node cluster the false-positive risk dominates the
 // latency win.
 struct MembershipConfig {
   std::chrono::milliseconds heartbeat_interval{200};
@@ -85,13 +85,13 @@ class Membership {
   void Start();
   void Shutdown();
 
-  // RPC entry point. Returns the local view of the cluster — the same
+  // RPC entry point. Returns the local view of the cluster - the same
   // alive_peers + cluster_epoch the gRPC shim ships as HeartbeatResponse
   // (see proto/lethe.proto).
   //
   // The proto's HeartbeatRequest carries known_peers (gossip convergence)
   // and load (admission-control signaling), but this signature accepts only
-  // peer_id and peer_epoch for now — a known shape mismatch with
+  // peer_id and peer_epoch for now - a known shape mismatch with
   // proto/lethe.proto:128-149 to be widened later, not a contradiction.
   HeartbeatReply OnHeartbeat(const std::string& peer_id,
                              std::uint64_t peer_epoch);
@@ -102,7 +102,7 @@ class Membership {
   // Current cluster epoch (incremented on membership change).
   std::uint64_t Epoch() const noexcept { return epoch_.load(); }
 
-  // For Evictor.BroadcastEvictions — returns peer gRPC addresses.
+  // For Evictor.BroadcastEvictions - returns peer gRPC addresses.
   std::vector<std::string> AllPeerAddresses() const;
 
   // Test-only seam: bump the cluster epoch by 1, simulating a membership

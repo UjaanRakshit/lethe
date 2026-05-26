@@ -5,7 +5,7 @@ working set exceeds a single node's KV memory, where vLLM's own single-node
 prefix cache collapses.
 
 Two configs, identical workload, identical GPU + gpu_memory_utilization:
-  A  vLLM, native prefix caching ON  — the honest baseline (working set sized
+  A  vLLM, native prefix caching ON  - the honest baseline (working set sized
      to exceed single-node KV memory).
   B  same + LetheCacheConnector against 3 loopback lethe_server nodes (R=2),
      with Lethe DRAM raised (LETHE_DRAM_BYTES) so overflow lands in Lethe.
@@ -13,7 +13,7 @@ Two configs, identical workload, identical GPU + gpu_memory_utilization:
 Working-set size is swept by W12_NDIST = the number of distinct 256-token
 prefixes, each replayed REPEATS times interleaved. Hit rate is measured on
 the warm passes via RequestOutput.num_cached_tokens (for config B this counts
-Lethe-served tokens). One (config, n_distinct, rep) per process — building two
+Lethe-served tokens). One (config, n_distinct, rep) per process - building two
 engines in one process does not release GPU memory between them.
 
 Budget is set by gpu_memory_utilization, deliberately NOT
@@ -24,7 +24,7 @@ would fake a crossover.
 Env: W12_CONFIG=A|B, W12_NDIST, W12_REP, W12_MODEL, W12_GPU_UTIL,
      W12_LETHE_DRAM (bytes/node), W12_OUTDIR, LETHE_SERVER_BIN,
      LETHE_EXTRA_LIB (extra LD_LIBRARY_PATH for the server subprocess; on PACE
-     the conda env lib + spack gcc-12.3 lib64 — leave empty on a normal box).
+     the conda env lib + spack gcc-12.3 lib64 - leave empty on a normal box).
 
 Reference run: PACE ICE, one L40S per SLURM job (--exclusive), gemma-3-1b-it,
 util=0.12, W12_NDIST in {32,64,128,256,512,1024}, 3 reps each; results

@@ -147,7 +147,7 @@ def test_cluster_comes_up(cluster):
     for node, addr in addrs.items():
         with LetheClient(primary_address=addr) as c:
             # The simplest Heartbeat surface is to do a trivial Lookup
-            # against zero blocks — exercises the RPC plumbing without
+            # against zero blocks - exercises the RPC plumbing without
             # caring about the result.
             res = c.lookup([], request_id=f"smoke-{node}")
             assert res.hits == [] and res.misses == []
@@ -230,7 +230,7 @@ def test_per_primary_batching_uses_few_rpcs(cluster):
     # have the block. The client's transparent Fetch then returns
     # None for cold-cache blocks, surfacing as None entries in
     # result.fetched. So the correct cold-cache assertion is "every
-    # fetched value is None," NOT "len(misses) == N" — misses only
+    # fetched value is None," NOT "len(misses) == N" - misses only
     # contains blocks for which the server returned NEITHER LocalHit
     # NOR RemoteHit (e.g. router has no peer for the routed primary).
     block_ids = [_make_block(seed=10000 + i)[0] for i in range(30)]
@@ -240,7 +240,7 @@ def test_per_primary_batching_uses_few_rpcs(cluster):
         result = c.lookup(block_ids, request_id="batched")
         elapsed = time.monotonic() - t0
 
-    # Every block should be classified — either as a hit (LocalHit on
+    # Every block should be classified - either as a hit (LocalHit on
     # the queried node, or RemoteHit forwarded by it) or a miss. The
     # union covers all 30 input blocks.
     classified = len(result.hits) + len(result.misses)
@@ -293,7 +293,7 @@ def test_replication_lands_within_drain(cluster):
         for node, addr in addrs.items():
             with LetheClient(primary_address=addr) as c:
                 # Single-address lookup (no peers) so we get the
-                # RAW server-side decision — LocalHit only when this
+                # RAW server-side decision - LocalHit only when this
                 # node has the bytes locally.
                 r = c.lookup([bid], request_id=f"replica-check-{node}")
                 if r.hits:

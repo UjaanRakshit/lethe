@@ -10,7 +10,7 @@
 //   - Thread-safe under concurrent Record* (the real value is under
 //     TSan; functionally we just assert the totals add up).
 //
-// The Metrics ctor binds an ephemeral /metrics port (0) — the HTTP
+// The Metrics ctor binds an ephemeral /metrics port (0) - the HTTP
 // thread runs but the test never connects to it; it scrapes in-process.
 
 #include <cassert>

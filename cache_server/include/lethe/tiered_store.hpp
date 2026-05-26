@@ -23,7 +23,7 @@
 //
 // Lifetime contract: GetResult.data is OWNED bytes (a vector), not a
 // borrowed span. The SSD tier can't safely lend spans into mmap'd memory
-// across Erase/Put churn — the slot may be reused for an unrelated block
+// across Erase/Put churn - the slot may be reused for an unrelated block
 // before the caller serializes the bytes. Uniform ownership is the simplest
 // invariant; the per-Get copy is one memcpy of <= slot_bytes (default
 // 64 KiB), negligible at our scale.
@@ -127,7 +127,7 @@ class TieredStore {
   // Per-block access counter, used for promotion decisions. Hashed in a
   // separate map to keep BlockStore lean.
   std::unordered_map<BlockId, std::uint32_t, BlockIdHash> access_counts_;
-  // SIEVE visited bits. Same shared_mutex as access_counts_ — both are
+  // SIEVE visited bits. Same shared_mutex as access_counts_ - both are
   // touched on every Get, so one lock acquisition handles both. Membership
   // in `visited_` ⇒ "visited bit set"; absence ⇒ cleared.
   std::unordered_set<BlockId, BlockIdHash> visited_;

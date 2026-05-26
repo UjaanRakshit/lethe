@@ -1,4 +1,4 @@
-// Membership — heartbeat-based failure detection over a static seed list.
+// Membership - heartbeat-based failure detection over a static seed list.
 //
 //   * Heartbeat thread: every cfg.heartbeat_interval (default 200ms), fan out
 //     Heartbeat RPCs to every known peer (alive AND not-self). Parallel via
@@ -20,7 +20,7 @@
 //
 // Threading: ONE std::thread (member of the class). Per-tick RPC parallelism
 // uses std::async (one thread per active peer for the tick). The heartbeat
-// thread is deliberately separate from the gRPC server's worker pool —
+// thread is deliberately separate from the gRPC server's worker pool -
 // heartbeat latency must not couple to RPC service load.
 //
 // gRPC client stubs live in a TU-local registry keyed by Membership* (same
@@ -157,7 +157,7 @@ void Membership::HeartbeatLoop() {
   if (impl == nullptr) return;
 
   while (running_.load(std::memory_order_acquire)) {
-    // Send heartbeats to all known peers (alive AND dead — dead peers
+    // Send heartbeats to all known peers (alive AND dead - dead peers
     // can resurrect via successful round-trip).
     SendHeartbeatsToAllPeers();
 
@@ -305,7 +305,7 @@ void Membership::OnMembershipChange(
   // Bump epoch FIRST so any concurrent caller sees the new value.
   epoch_.fetch_add(1, std::memory_order_release);
   // Surface the new epoch as a gauge (the dashboard's lethe_cluster_epoch
-  // panel — a jump signals a membership change).
+  // panel - a jump signals a membership change).
   if (metrics_ != nullptr) {
     metrics_->RecordEpoch(epoch_.load(std::memory_order_relaxed));
   }
@@ -316,7 +316,7 @@ void Membership::OnMembershipChange(
   //
   // CRITICAL: include the local node in the alive list passed to
   // Router::SetPeers. peers_ stores only OTHER peers (main.cpp's --peers
-  // parser strips self), so iterating peers_ alone gives an incomplete ring —
+  // parser strips self), so iterating peers_ alone gives an incomplete ring -
   // see the matching comment in cache.cpp's ctor. Without this,
   // IsLocalPrimary/IsLocalReplica always return false and the re-replication
   // heuristic dispatches zero blocks.

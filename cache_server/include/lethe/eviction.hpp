@@ -10,7 +10,7 @@
 //
 // `visited` is set by Evictor::MarkVisited(), called from every
 // BlockStore::Get hit (see block_store.hpp), and cleared only by the
-// scanning hand. This is real SIEVE, not approximate-LRU-by-timestamp —
+// scanning hand. This is real SIEVE, not approximate-LRU-by-timestamp -
 // that distinction matters for the LRU comparison in the design doc.
 //
 // Cluster-wide coordination: on eviction, broadcast (gossip) it so peers'
@@ -67,7 +67,7 @@ class Evictor {
   };
   PassResult RunPassForTier(Tier tier);
 
-  // Called from Cache::OnEvictBroadcast — record that a peer evicted these
+  // Called from Cache::OnEvictBroadcast - record that a peer evicted these
   // blocks. Read-repair (Replicator::FetchFromAny) does NOT consult this
   // yet; the wire is in place and skipping just-evicted nodes is a small
   // follow-up if profiling shows wasted cross-cluster fetches.

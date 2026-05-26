@@ -9,7 +9,7 @@ Single-node mode: pass `primary_address` only; every RPC hits that node.
 Multi-node mode: pass `peers=[(node_id, address), ...]`. The client builds
 a `HashRing` (bit-compatible with the C++ Router) and routes every Lookup
 per-block to its primary owner, batching block_ids that share a primary
-into one RPC. Inserts hit the local node only — the server-side Replicator
+into one RPC. Inserts hit the local node only - the server-side Replicator
 handles cross-node pushes. On a RemoteHit response, the client
 transparently Fetches from source_node and stitches the bytes into the
 result.
@@ -18,7 +18,7 @@ Failure semantics (never block scheduling on cache liveness):
 transient gRPC errors (UNAVAILABLE / DEADLINE_EXCEEDED) retry up to 3
 times with 50 ms × 2^attempt backoff; other status codes surface as Miss.
 A cross-node Fetch failure reclassifies the block as Miss. lookup/fetch
-never raise grpc.RpcError — they return a LookupResult (possibly all
+never raise grpc.RpcError - they return a LookupResult (possibly all
 misses) or bytes-or-None.
 """
 
@@ -172,7 +172,7 @@ class LetheClient:
     def _call_with_retry(self, rpc_callable):
         """Run an RPC closure with the retry policy. Returns the response
         on success, None on terminal failure (the caller decides how to
-        surface it — Miss for Lookup, None for Fetch).
+        surface it - Miss for Lookup, None for Fetch).
 
         ``rpc_callable`` is a no-arg lambda that issues one RPC; it may
         raise grpc.RpcError, which the helper catches and either retries
@@ -314,7 +314,7 @@ class LetheClient:
         Multi-node: Insert hits ONE node (``address`` or
         ``primary_address``); the server-side Replicator pushes to
         the R-1 successors on the ring. We don't route Insert by
-        block on the client side — the wire cost would force the
+        block on the client side - the wire cost would force the
         client to know about every primary, and the server is more
         efficient at the fanout.
         """
@@ -346,7 +346,7 @@ class LetheClient:
     ) -> Optional[bytes]:
         """Pull a single block's bytes. Returns None on miss or
         terminal RPC failure. Roundtrip semantics: bytes are an
-        immutable copy — the cache's local span never crosses the
+        immutable copy - the cache's local span never crosses the
         wire.
         """
         req = lethe_pb2.FetchRequest(
@@ -364,12 +364,11 @@ class LetheClient:
     # ---- Internals -------------------------------------------------------
 
     def _local_label_for(self, _stub) -> str:
-        # The client doesn't know its own "node identity"; this is a
-        # placeholder so the RemoteHit-triggered-Fetch path can avoid
-        # spinning on a hit whose source_node matches the queried
-        # node (which would mean a LocalHit dressed up — server-side
-        # code path already returns LocalHit in that case, so this
-        # branch is purely defensive).
+        # The client doesn't know its own node identity; this empty
+        # sentinel lets the RemoteHit-triggered Fetch path avoid spinning
+        # on a hit whose source_node matches the queried node. The server
+        # already returns LocalHit in that case, so this branch is purely
+        # defensive.
         return ""
 
     def _fetch_into_result(

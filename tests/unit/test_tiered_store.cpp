@@ -159,7 +159,7 @@ void TestPromotionOnAccessThreshold() {
   auto g3 = ts.Get(id);
   assert(g3.has_value());
   assert(g3->tier_found == Tier::DRAM);
-  // Already at DRAM — promotion target would be HBM, but HBM disabled
+  // Already at DRAM - promotion target would be HBM, but HBM disabled
   // (hbm_bytes=0). No further promotion.
   assert(!g3->promoted);
   std::cout << "  TestPromotionOnAccessThreshold: ok\n";
@@ -211,7 +211,7 @@ void TestEraseWipesAccessCounts() {
   // After Erase, access count entry is gone (returns 0 for absent).
   assert(ts.access_count_for_testing(id) == 0);
 
-  // Re-Insert + Get behaves as fresh — count starts from 1.
+  // Re-Insert + Get behaves as fresh - count starts from 1.
   ts.Put(blk, Tier::DRAM);
   (void)ts.Get(id);
   assert(ts.access_count_for_testing(id) == 1);

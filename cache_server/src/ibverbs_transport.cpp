@@ -15,7 +15,7 @@
 //             code; the RDMA win is on Send.
 //
 // Connection: rdma_cm (librdmacm). IPoIB is present, so
-// rdma_resolve_addr/route derive the IB path/GID/MTU for us — far less
+// rdma_resolve_addr/route derive the IB path/GID/MTU for us - far less
 // silent-hang surface than a hand-built QP state machine. Each node listens
 // (rdma_listen) and accepts inbound connections (one accepted QP per peer for
 // RECV), and dials each peer (one outbound QP per peer for SEND). One
@@ -533,7 +533,7 @@ std::future<bool> IbverbsTransport::Send(const std::string& peer_id,
   if (!c) { impl_->n_drop_noconn.fetch_add(1); pr->set_value(false); return fut; }
 
   // Acquire a free send buffer. If the ring is full, wait (bounded) for a
-  // completion to free one rather than dropping instantly — the re-replication
+  // completion to free one rather than dropping instantly - the re-replication
   // bounce roughly doubles send volume, so transient bursts exceed the ring.
   // Never hold send_mu while sleeping (PollOutbound needs it to free buffers).
   int buf_idx = -1;

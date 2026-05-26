@@ -14,7 +14,7 @@
 //   * SSD victim → hard Erase (no slower tier).
 //
 // Cluster-wide broadcast: after each pass, batch all evicted block IDs into
-// ONE EvictBroadcast RPC per alive peer. Best-effort — failures are logged but
+// ONE EvictBroadcast RPC per alive peer. Best-effort - failures are logged but
 // don't block the next pass. The receiver records "peer evicted these" in its
 // own Evictor; read-repair MAY consult it (wire is here, optimization is a
 // follow-up).
@@ -27,7 +27,7 @@
 // needed. Documented in DECISIONS.md.
 //
 // Threading: each tier has its own std::thread. No shared state between the
-// threads beyond the read-only TieredStore* and Membership* — both serialize
+// threads beyond the read-only TieredStore* and Membership* - both serialize
 // their own internals. EvictBroadcast stubs are per-peer behind
 // EvictorState::stubs_mu.
 
@@ -88,7 +88,7 @@ struct EvictorState {
   std::size_t hand_ssd = 0;
 
   // Per-peer gRPC stubs for EvictBroadcast. Built lazily on first use.
-  // Channels are HTTP/2 with internal stream mux — one channel per
+  // Channels are HTTP/2 with internal stream mux - one channel per
   // peer is enough.
   std::mutex stubs_mu;
   std::unordered_map<std::string,
@@ -97,9 +97,9 @@ struct EvictorState {
       stubs;
 
   // Tracks "peer recently evicted these blocks." Loosely bounded to 4096
-  // entries per peer — we just clear the set when it grows past the bound.
+  // entries per peer - we just clear the set when it grows past the bound.
   // Read by `peer_evicted_count_for_testing`; FetchFromAny does not yet
-  // consult this — wire is here, consumer is a follow-up.
+  // consult this - wire is here, consumer is a follow-up.
   std::mutex peer_evict_mu;
   std::unordered_map<std::string, std::unordered_set<BlockId, BlockIdHash>>
       peer_evicted;
@@ -158,7 +158,7 @@ void Evictor::Start() {
   auto spawn = [this, impl](Tier tier) {
     if (store_->capacity_bytes(tier) == 0) return;  // tier not configured
     impl->threads.emplace_back([this, impl, tier]() {
-      // Per-thread wake cv kept local — eviction threads only ever
+      // Per-thread wake cv kept local - eviction threads only ever
       // self-time. The shared shutdown signal comes from impl->running.
       using namespace std::chrono_literals;
       while (impl->running.load(std::memory_order_acquire)) {
@@ -245,14 +245,14 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
     auto& meta = blocks[hand];
 
     if (meta.visited) {
-      // Second chance — clear the bit and advance. ClearVisited
+      // Second chance - clear the bit and advance. ClearVisited
       // clears the PERSISTENT bit in the store (brief unique lock on
       // TieredStore::counts_mu_); we ALSO clear it in our local
       // snapshot copy so the next sweep through this pass sees the
       // block as unvisited. Without the local clear, the snapshot's
       // visited flag stays true forever (it's a point-in-time copy),
       // the hand re-grants a second chance every sweep, and the pass
-      // makes no progress until max_steps — which test_eviction's
+      // makes no progress until max_steps - which test_eviction's
       // all-visited convergence case caught.
       store_->ClearVisited(meta.id);
       meta.visited = false;
@@ -266,7 +266,7 @@ Evictor::PassResult Evictor::RunPassForTier(Tier tier) {
       }
       std::size_t bytes_removed = 0;
       if (demoted) {
-        // Demote moved the block — it's no longer in this tier.
+        // Demote moved the block - it's no longer in this tier.
         bytes_removed = meta.size_bytes;
       } else {
         bytes_removed = store_->Erase(meta.id);
@@ -324,14 +324,14 @@ std::size_t Evictor::peer_evicted_count_for_testing(
 }
 
 // ---------------------------------------------------------------------------
-// Broadcast helper — gRPC client side; lazy per-peer stubs.
+// Broadcast helper - gRPC client side; lazy per-peer stubs.
 // ---------------------------------------------------------------------------
 
 void Evictor::BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted) {
   auto* impl = impl_for(this);
   if (impl == nullptr || membership_ == nullptr) return;
 
-  // Pull a snapshot of peer addresses. We send to every known address — if a
+  // Pull a snapshot of peer addresses. We send to every known address - if a
   // peer is dead the RPC fails fast and the broadcast is lost, which is fine
   // per the best-effort contract.
   auto addresses = membership_->AllPeerAddresses();
@@ -346,7 +346,7 @@ void Evictor::BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted) {
     *req.add_evicted() = BlockIdToProto(id);
   }
 
-  // Per-peer dispatch. Fire-and-forget on this thread — the eviction
+  // Per-peer dispatch. Fire-and-forget on this thread - the eviction
   // loop is tolerant of the per-peer RPC latency since we already did
   // the work of freeing bytes.
   for (const auto& address : addresses) {
@@ -370,7 +370,7 @@ void Evictor::BroadcastEvictionsToPeers(const std::vector<BlockId>& evicted) {
     ctx.set_deadline(std::chrono::system_clock::now() +
                      std::chrono::milliseconds(kBroadcastDeadlineMs));
     (void)stub->EvictBroadcast(&ctx, req, &resp);
-    // Failures swallowed — never block cache work on peer liveness. The
+    // Failures swallowed - never block cache work on peer liveness. The
     // eviction already happened locally; a missed broadcast costs one wasted
     // RPC at the receiver later.
   }

@@ -12,11 +12,11 @@
 #   * docker with NET_ADMIN-capable containers (compose grants it)
 #
 # The five scenarios (see chaos/invariants.py for the invariant defs):
-#   1. sigkill      — hard-kill a node, leave dead; verify INV-1..6.
-#   2. restart      — hard-kill, restart, verify clean rejoin + reconverge.
-#   3. pause        — long SIGSTOP (>dead_after), unpause, verify rejoin.
-#   4. partition    — iptables split node1<-X->node2; no split-brain, heal.
-#   5. packet_loss  — 5% netem on a node; no false death, load path alive.
+#   1. sigkill      - hard-kill a node, leave dead; verify INV-1..6.
+#   2. restart      - hard-kill, restart, verify clean rejoin + reconverge.
+#   3. pause        - long SIGSTOP (>dead_after), unpause, verify rejoin.
+#   4. partition    - iptables split node1<-X->node2; no split-brain, heal.
+#   5. packet_loss  - 5% netem on a node; no false death, load path alive.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,7 +40,7 @@ start_ts=$(date +%s)
 # Each scenario starts from a FRESH cluster (down clears the in-memory block
 # stores). Blocks are never deleted, so a reused store accumulates across
 # scenarios; because re-replication re-pushes EVERY in-route block a node
-# holds (idempotent over-push — it can't know which a peer is missing without
+# holds (idempotent over-push - it can't know which a peer is missing without
 # ACKs), a polluted store would inflate each scenario's recovery time and make
 # the size-aware INV-3 budget unfair. A clean store per scenario keeps recovery
 # proportional to that scenario's own corpus. The LARGE scenario deliberately
@@ -105,7 +105,7 @@ echo "wall-clock: ${total}s (budget ${SUITE_BUDGET_S}s)"
 if (( overall == 0 )); then
   echo "RESULT: ALL PASS (${#SCENARIOS[@]} scenarios)"
 else
-  echo "RESULT: FAIL — ${FAILED[*]}"
+  echo "RESULT: FAIL - ${FAILED[*]}"
 fi
 
 if [[ "$KEEP_UP" == "1" ]]; then

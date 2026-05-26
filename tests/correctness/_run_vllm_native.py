@@ -16,7 +16,7 @@ mitigate by:
   - one prompt per generate() call (constant batch composition)
   - enforce_eager=True (no CUDA-graph capture)
   - dtype=bfloat16 (vLLM 0.19.1 explicitly rejects float16 for
-    gemma3_text — "Numerical instability. Please use bfloat16 or
+    gemma3_text - "Numerical instability. Please use bfloat16 or
     float32 instead." Documented in vllm/engine/arg_utils.py model
     config validation.)
   - seed=42
@@ -159,7 +159,7 @@ def main() -> int:
 
     llm_kwargs = dict(
         model=args.model,
-        dtype="bfloat16",  # gemma3_text rejects fp16 — see docstring
+        dtype="bfloat16",  # gemma3_text rejects fp16 - see docstring
         enforce_eager=True,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=0.85,
@@ -205,7 +205,7 @@ def main() -> int:
     # One prompt at a time so batch composition is constant across runs.
     # In "native" mode each prompt gets a warm-up generate first so the
     # prefix lands in vLLM's own prefix cache; the timed decode then
-    # HITS that cache — the control for the connector-warm run.
+    # HITS that cache - the control for the connector-warm run.
     warm_sp = SamplingParams(temperature=0.0, max_tokens=1, seed=args.seed)
     t_gen_start = time.time()
     results: list[dict] = []

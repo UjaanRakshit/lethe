@@ -1,7 +1,7 @@
-# tests/CMakeLists.txt — W1 unit tests.
+# tests/CMakeLists.txt - W1 unit tests.
 #
 # Built when -DLETHE_BUILD_TESTS=ON (default). Each test is a
-# standalone main() with assert()s — no GoogleTest until W3+ when the
+# standalone main() with assert()s - no GoogleTest until W3+ when the
 # test surface gets big enough to justify a real harness.
 #
 # ThreadSanitizer wiring: pass -DLETHE_ENABLE_TSAN=ON. On clang/gcc

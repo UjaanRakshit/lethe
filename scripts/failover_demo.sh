@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Lethe failover demo — the "hit rate survives a node kill" money shot, made
+# Lethe failover demo - the "hit rate survives a node kill" money shot, made
 # visual on Grafana. This is INV-5 driven against the live cluster.
 #
 # It reuses the chaos harness (chaos/invariants.py, scenario=sigkill): it
 # inserts a corpus at R=2, hard-kills one node, and samples the ring-routed
 # hit rate while the cluster detects the death and re-replicates. No bespoke
-# demo wiring — the same code the chaos suite asserts against.
+# demo wiring - the same code the chaos suite asserts against.
 #
 # Watch these dashboard panels at http://localhost:3000 (anonymous admin):
-#   * Cluster epoch         — steps up ~3.3 s after the kill (heartbeat
+#   * Cluster epoch         - steps up ~3.3 s after the kill (heartbeat
 #                             detection; dead_after=3 s). The clearest signal.
-#   * Under-replicated blocks — spikes to the victim's in-route block count,
+#   * Under-replicated blocks - spikes to the victim's in-route block count,
 #                             then drains back to 0 as survivors re-replicate.
-#   * Cache hit rate        — stays high through the kill: the survivors still
+#   * Cache hit rate        - stays high through the kill: the survivors still
 #                             hold the R=2 replicas, so the server-side hit
 #                             ratio does NOT crash. That is INV-5, the load
 #                             path surviving a node loss.
 #
 # Note: the chaos run ALSO prints its own client-side ring hit-rate, which dips
-# (~1.00 -> ~0.75) during the ~3 s detection window — lookups aimed at the dead
-# node before the client's ring re-routes — and recovers. That dip is in the
+# (~1.00 -> ~0.75) during the ~3 s detection window - lookups aimed at the dead
+# node before the client's ring re-routes - and recovers. That dip is in the
 # scenario's stdout (INV-5: min hit-rate > 0), not on the Grafana ratio panel
 # (those client-side misses never reach a live server to be counted).
 #
@@ -60,10 +60,10 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 
-echo "[demo] Grafana: http://localhost:3000  (dashboard: Lethe — Distributed KV Cache)"
+echo "[demo] Grafana: http://localhost:3000  (dashboard: Lethe - Distributed KV Cache)"
 echo "[demo] watch: Cache hit rate (dips, recovers, never 0) | Cluster epoch (bumps)"
 echo "[demo]        | Under-replicated blocks (spikes, drains to 0)"
-echo "[demo] running chaos scenario '$SCENARIO' in 5s — keep the dashboard open..."
+echo "[demo] running chaos scenario '$SCENARIO' in 5s - keep the dashboard open..."
 sleep 5
 
 python -m chaos.invariants --scenario "$SCENARIO"

@@ -1,7 +1,7 @@
 """Pre-flight: save → wire → load is byte-identical.
 
 Runs before the GPU-driven three-way control test. If this fails, the
-three-way control will also fail — running this first answers "is it
+three-way control will also fail - running this first answers "is it
 serialization or is it the engine?" cheaply.
 
 Two scenarios, in increasing scope:
@@ -15,7 +15,7 @@ Two scenarios, in increasing scope:
 
 The load-side inject is deliberately NOT exercised here because
 ``wait_for_layer_load`` needs a real ``forward_context.no_compile_layers``
-to find the layer object — that's available only from inside a real
+to find the layer object - that's available only from inside a real
 vLLM engine forward, which is the three-way control test's surface.
 "fetch returns the exact bytes we saved" is the load-side correctness
 signal: ``_bytes_to_tensor`` is unit-tested in scenario 1, so
@@ -34,7 +34,7 @@ import pytest
 
 # Skip the whole module if torch isn't installed (apt python doesn't
 # have torch; .venv-vllm does). The pure helper test only needs torch,
-# not vllm — so we don't pytest.importorskip("vllm") here.
+# not vllm - so we don't pytest.importorskip("vllm") here.
 torch = pytest.importorskip("torch", reason="torch needed for save/load helpers")
 
 
@@ -97,7 +97,7 @@ def test_tensor_bytes_roundtrip_identity(shape, dtype):
 
 
 def test_tensor_bytes_size_mismatch_raises():
-    """A wrong shape claim at load time must raise — silent reshape
+    """A wrong shape claim at load time must raise - silent reshape
     would mask exactly the class of bug we use this test to catch."""
     from lethe_client.vllm_hook import _bytes_to_tensor, _tensor_to_bytes
 
@@ -178,7 +178,7 @@ def test_save_via_connector_then_fetch_is_byte_identical(server):
     """End-to-end: WORKER connector saves a CPU kv_layer block,
     LetheClient fetches the same BlockId, bytes equal source.
 
-    Does NOT exercise wait_for_layer_load — that's the three-way
+    Does NOT exercise wait_for_layer_load - that's the three-way
     control's surface (needs a real forward_context). What this test
     proves: the save path's per-block extract + serialize + Insert
     chain produces bytes that round-trip exactly through the cache
@@ -198,7 +198,7 @@ def test_save_via_connector_then_fetch_is_byte_identical(server):
     assert type(connector).__name__ == "LetheCacheConnector"
 
     # Synthetic kv_layer: (2 K|V, 4 pages, 16 page_size, 64 kv_dim) fp16.
-    # CPU is fine — save_kv_layer copies to CPU anyway.
+    # CPU is fine - save_kv_layer copies to CPU anyway.
     kv_layer = torch.randn(2, 4, 16, 64).to(torch.float16)
 
     # We'll save block index 1 (vllm_block_id=1) with a known chained

@@ -10,7 +10,7 @@ whole module when:
 
 Threading note: vLLM's scheduler calls the scheduler-side connector
 methods from one thread per scheduling iteration (verified at
-``vllm/v1/core/sched/scheduler.py:619`` and ``:954`` in 0.19.1 — both
+``vllm/v1/core/sched/scheduler.py:619`` and ``:954`` in 0.19.1 - both
 call sites are inside ``Scheduler.schedule()`` and run serially). The
 tests construct the connector and call the methods directly without
 worrying about concurrency.
@@ -32,7 +32,7 @@ vllm = pytest.importorskip(
     "(pinned to vllm==0.19.1)",
 )
 
-from vllm.config import (  # noqa: E402  — after importorskip
+from vllm.config import (  # noqa: E402  - after importorskip
     DeviceConfig,
     KVTransferConfig,
     VllmConfig,
@@ -90,7 +90,7 @@ pytestmark = pytest.mark.skipif(
 def server():
     """Spawn lethe_server on a free port; tear down at module teardown.
 
-    Same pattern as client/tests/test_client_roundtrip.py — keeps the
+    Same pattern as client/tests/test_client_roundtrip.py - keeps the
     test bootstrap consistent across the two suites.
     """
     port = _pick_free_port()
@@ -146,7 +146,7 @@ def _make_connector(address: str, role: KVConnectorRole = KVConnectorRole.SCHEDU
 def _make_request(prompt_token_ids: list[int], request_id: str = "req-1") -> Request:
     """Construct a Request with the minimal fields the scheduler-side
     methods read (request_id, prompt_token_ids). Other fields use
-    sane defaults — the full scheduling path is never invoked here.
+    sane defaults - the full scheduling path is never invoked here.
     """
     return Request(
         request_id=request_id,
@@ -245,7 +245,7 @@ def test_scheduler_methods_partial_warm(server):
     # Distinct token range to keep the cache state of other tests isolated.
     token_ids = list(range(200, 264))  # 64 tokens, 4 blocks
     hashes = _hashes_for_prefix(token_ids, block_size=16)
-    # Insert block 0 and block 2 — leave a gap at block 1.
+    # Insert block 0 and block 2 - leave a gap at block 1.
     assert _insert_blocks(server, [hashes[0], hashes[2]]) == 2
 
     conn = _make_connector(server)
@@ -260,7 +260,7 @@ def test_update_state_then_build_meta_roundtrip(server):
     build_connector_meta returns metadata with non-empty loads AND
     non-empty stores (policy: store everything that wasn't loaded). A
     second build_connector_meta on the same scheduler_output returns
-    empty loads — consumption is one-shot.
+    empty loads - consumption is one-shot.
     """
     from types import SimpleNamespace
 
@@ -270,7 +270,7 @@ def test_update_state_then_build_meta_roundtrip(server):
 
     from lethe_client.vllm_hook import LetheConnectorMetadata
 
-    # Token range that does NOT have to be pre-warmed for this test —
+    # Token range that does NOT have to be pre-warmed for this test -
     # update_state_after_alloc is called by the scheduler AFTER it has
     # already decided to load N tokens (the connector previously
     # reported them as available). We synthesize that recorded state
@@ -339,7 +339,7 @@ def test_update_state_then_build_meta_roundtrip(server):
         f"second build must have no loads (one-shot); got {meta2.loads}"
     )
     # Sanity: stores still populate because they are NOT one-shot
-    # state — they come straight from scheduler_output.
+    # state - they come straight from scheduler_output.
     assert len(meta2.stores) == 1
 
 

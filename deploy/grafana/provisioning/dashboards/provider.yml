@@ -1,0 +1,16 @@
+# Tells Grafana to load any dashboard JSON dropped in /var/lib/grafana/dashboards
+# (mounted from deploy/grafana/dashboards/). Without this provider the JSON is
+# never imported, even though the file is on disk.
+apiVersion: 1
+
+providers:
+  - name: lethe
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

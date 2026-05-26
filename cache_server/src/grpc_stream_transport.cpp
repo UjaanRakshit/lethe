@@ -1,4 +1,4 @@
-// GrpcStreamTransport — default bulk-KV transport, used as the data path
+// GrpcStreamTransport - default bulk-KV transport, used as the data path
 // because SoftRoCE is unavailable in the dev environment.
 //
 // Wire model:
@@ -17,7 +17,7 @@
 // don't need. The IB-hardware swap is a transport-level change, not a
 // wire-level one.
 //
-// OnReceive: this transport has no recv-side responsibility — receives arrive
+// OnReceive: this transport has no recv-side responsibility - receives arrive
 // through the regular gRPC service handlers in main.cpp. The OnReceiveFn is
 // stored but never invoked here; the field exists to keep the constructor
 // symmetric with IbverbsTransport, whose RDMA receives don't flow through the
@@ -95,7 +95,7 @@ GrpcStreamTransport::GrpcStreamTransport(RdmaConfig cfg, OnReceiveFn on_receive)
   impl_->cfg = std::move(cfg);
   impl_->on_receive = std::move(on_receive);
   // The on_receive callback is stored for symmetry with IbverbsTransport
-  // but is never invoked here — gRPC receives are dispatched by main.cpp's
+  // but is never invoked here - gRPC receives are dispatched by main.cpp's
   // service handlers, not by us. Cast-to-void quiets the unused-warn.
   (void)impl_->on_receive;
 }
@@ -144,7 +144,7 @@ std::future<bool> GrpcStreamTransport::Send(
   }
 
   // Build the Insert request and dispatch synchronously. The future is
-  // resolved before we return, which is fine — the caller (Replicator's
+  // resolved before we return, which is fine - the caller (Replicator's
   // worker) is already a background thread.
   ::lethe::rpc::InsertRequest req;
   req.set_request_id("");
@@ -195,15 +195,6 @@ std::future<std::optional<KvBlock>> GrpcStreamTransport::Fetch(
   blk.tier = Tier::DRAM;
   pr.set_value(std::move(blk));
   return fut;
-}
-
-// Free function declared in kv_transport.hpp. Always-built TU so this symbol
-// is present regardless of LETHE_ENABLE_RDMA. Reports "no" unconditionally —
-// the transport factory does its own LETHE_ENABLE_RDMA #ifdef gate to decide
-// whether to try IbverbsTransport. With real IB hardware this body would
-// become a libibverbs probe (open device, check capabilities).
-bool RdmaIsAvailable(const std::string& /*device_name*/) {
-  return false;
 }
 
 }  // namespace lethe

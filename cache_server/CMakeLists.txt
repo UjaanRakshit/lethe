@@ -86,7 +86,7 @@ if(LETHE_ENABLE_RDMA)
   # W12.2: the real IbverbsTransport (rdma_cm connection + ibv SEND/RECV) is
   # live, so link the verbs libraries it uses. PACE ICE has libibverbs /
   # librdmacm system-wide (/usr/lib64). Default (RDMA=OFF) builds still need
-  # neither — the stub TU isn't compiled and these links don't apply.
+  # neither - the stub TU isn't compiled and these links don't apply.
   find_library(LIBIBVERBS ibverbs REQUIRED)
   find_library(LIBRDMACM  rdmacm  REQUIRED)
   target_link_libraries(lethe_server PRIVATE ${LIBIBVERBS} ${LIBRDMACM})
@@ -94,7 +94,7 @@ endif()
 
 if(LETHE_ENABLE_METRICS)
   # W10: metrics are a HAND-ROLLED Prometheus text exporter (metrics.cpp)
-  # — prometheus-cpp is not packaged for Ubuntu 22.04 and the families
+  # - prometheus-cpp is not packaged for Ubuntu 22.04 and the families
   # are simple counters/gauges/histograms over a single /metrics GET.
   # No external dependency, no extra link libraries; the /metrics HTTP
   # server uses raw POSIX sockets. See docs/DECISIONS.md (2026-05-28).
@@ -105,7 +105,7 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# hash_compat_driver — small CLI that reads (prev_hash_hex, token_ids)
+# hash_compat_driver - small CLI that reads (prev_hash_hex, token_ids)
 # on stdin and prints BLAKE3-chained-block-hash hex per line. Used by
 # tests/correctness/test_hash_compat.py to assert the C++ and Python
 # implementations produce bit-identical digests (W0 invariant).

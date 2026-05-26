@@ -11,7 +11,7 @@ Modes:
                      Lethe hit count + a direct round-trip Lookup.
 
 vanilla/disagg build the engine with enable_prefix_caching=False so vLLM's
-native prefix cache cannot serve the second pass — Lethe is the only
+native prefix cache cannot serve the second pass - Lethe is the only
 external KV path. greedy / seed=42 / enforce_eager / bfloat16 for
 determinism.
 
@@ -34,7 +34,7 @@ os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
 os.environ.setdefault("VLLM_FORCE_DETERMINISTIC", "1")
 # Run the engine core (scheduler) + worker IN THIS PROCESS. vLLM v1
 # defaults to a multiprocess engine where the connector instances live
-# in a child process — their module-global diagnostics (SCHEDULER_LOOKUP_
+# in a child process - their module-global diagnostics (SCHEDULER_LOOKUP_
 # LOG / WORKER_STORE_LOG / CALL_COUNTERS) would then be invisible here.
 # Single-process keeps them observable and does not change token output.
 os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")

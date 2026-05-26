@@ -7,14 +7,14 @@
 // Persistence model: NO fsync (see DESIGN.md "What's intentionally fragile").
 // Host crash loses recently-written SSD blocks; recovery falls back to
 // recompute via the model weights. Durability is only over process restart
-// (kill -9, restart, read the block back) — the page cache keeps the bytes
+// (kill -9, restart, read the block back) - the page cache keeps the bytes
 // around for that. Host crash is a separate, harder promise we don't make.
 //
 // Index rebuild on startup: scan every slot's header; if the magic byte is the
 // live sentinel (0xA5), pull the BlockId into the in-memory index and account
 // the payload bytes. O(total_slots) but once per process lifetime. The
 // torn-write window (header partially written but magic not set) is invisible
-// to us — those slots come back as "free" on restart, which is correct: a
+// to us - those slots come back as "free" on restart, which is correct: a
 // block we can't read intact is one we never had.
 
 #include "lethe/ssd_block_store.hpp"
@@ -52,7 +52,7 @@ SsdBlockStore::SsdBlockStore(std::filesystem::path file,
   // size we mmap is total_slots_ * slot_bytes_ (truncated down by slot
   // alignment). Stored on the object for parity with the constructor
   // arg + diagnostic clarity; the (void) cast silences clang's
-  // -Wunused-private-field — same pattern as Membership::router_.
+  // -Wunused-private-field - same pattern as Membership::router_.
   (void)capacity_bytes_;
 
   if (slot_bytes <= sizeof(SsdSlotHeader)) {
@@ -75,7 +75,7 @@ SsdBlockStore::SsdBlockStore(std::filesystem::path file,
   // Open + size the file. O_CREAT preserves an existing file's contents
   // (so the persistence acceptance test works); ftruncate to the
   // configured capacity grows or trims as needed. Trimming an oversized
-  // file loses any blocks past the new boundary — acceptable; this is
+  // file loses any blocks past the new boundary - acceptable; this is
   // a process startup decision, not a runtime resize.
   fd_ = ::open(file_.c_str(), O_RDWR | O_CREAT, 0644);
   if (fd_ < 0) {
@@ -113,7 +113,7 @@ SsdBlockStore::SsdBlockStore(std::filesystem::path file,
 
 SsdBlockStore::~SsdBlockStore() {
   if (mmap_base_ != nullptr) {
-    // No msync — host-crash durability is explicitly not a promise.
+    // No msync - host-crash durability is explicitly not a promise.
     ::munmap(mmap_base_, total_slots_ * slot_bytes_);
     mmap_base_ = nullptr;
   }
@@ -162,7 +162,7 @@ void SsdBlockStore::RebuildIndexFromMmap() {
     ++live;
   }
   used_bytes_.store(live_bytes, std::memory_order_relaxed);
-  // bump_next_ stays at 0 — we rebuilt free_slots_ exhaustively, so
+  // bump_next_ stays at 0 - we rebuilt free_slots_ exhaustively, so
   // every unused slot is on the free list. Bump path is unused on a
   // restored file; it only fires on a fresh-allocator path where we
   // skipped the scan (we don't, so this is fine).
@@ -206,7 +206,7 @@ bool SsdBlockStore::Put(KvBlock block) {
   // we crash mid-write, the magic stays 0x00 (or whatever stale value)
   // and the slot reads as free on restart. The persistence acceptance
   // test only relies on the page cache outliving process exit, not on
-  // surviving a real crash — but writing in this order costs nothing
+  // surviving a real crash - but writing in this order costs nothing
   // and makes the future fsync wiring straightforward.
   std::memcpy(payload, block.data.data(), block.data.size());
   h->tier = static_cast<std::uint8_t>(Tier::SSD);
@@ -234,7 +234,7 @@ std::optional<KvBlock> SsdBlockStore::GetCopy(const BlockId& id) {
   }
   const std::size_t n = it->second;
   SsdSlotHeader* h = slot_header(n);
-  // Header magic check is defensive — the index claims this slot is
+  // Header magic check is defensive - the index claims this slot is
   // live; if the on-disk magic is anything else, the file got
   // externally clobbered, treat as miss.
   if (h->magic != kSlotMagicLive) {
@@ -280,7 +280,7 @@ std::vector<BlockMeta> SsdBlockStore::Snapshot() const {
   std::vector<BlockMeta> out;
   out.reserve(index_.size());
   for (const auto& [id, slot_idx] : index_) {
-    // Read the header under the shared lock — Put/Erase hold unique, so
+    // Read the header under the shared lock - Put/Erase hold unique, so
     // no concurrent mutation. Cast away const for header access; the
     // method is logically const because we don't modify the bytes.
     const SsdSlotHeader* h = const_cast<SsdBlockStore*>(this)->slot_header(slot_idx);

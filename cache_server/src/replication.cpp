@@ -1,7 +1,7 @@
 // Replication + read-repair.
 //
 // Replicator holds a KvTransport* and delegates ALL peer-to-peer block
-// movement through the abstraction — this is the swap point for the IB
+// movement through the abstraction - this is the swap point for the IB
 // hardware transition: change the factory in main.cpp to construct an
 // IbverbsTransport instead of GrpcStreamTransport and the data path switches
 // transparently.
@@ -183,7 +183,7 @@ Replicator::Replicator(std::string local_node_id,
                        static_cast<unsigned long long>(attempt_n),
                        task.peer_id.c_str());
         }
-        // Dispatch via transport. Block on the future — the worker IS the
+        // Dispatch via transport. Block on the future - the worker IS the
         // concurrency unit here (queue + N workers = N in-flight Sends).
         // GrpcStreamTransport resolves the future synchronously inside
         // the call; an ibverbs transport would resolve when the
@@ -228,7 +228,7 @@ Replicator::Replicator(std::string local_node_id,
   // successive ticks. A dedicated low-frequency Replicator-owned timer keeps
   // re-replication self-contained (no Evictor->Replicator dependency), and its
   // lifetime is trivially correct (joined in ~Replicator, while
-  // store_/router_/transport_ — all declared before replicator_ in cache.hpp —
+  // store_/router_/transport_ - all declared before replicator_ in cache.hpp -
   // are still alive). It is a no-op (one mutex acquire + bool check) whenever
   // no round is active.
   raw->sweep_thread = std::thread([this, raw]() {
@@ -274,7 +274,7 @@ std::vector<std::string> Replicator::ReplicateOut(const KvBlock& block) {
   if (router_ == nullptr || transport_ == nullptr) return submitted;
   const auto route = router_->Route(block.id);
   // Replicate to the (R-1) successor peers. For R=2, that's exactly one
-  // peer. Skip self defensively — the ring shouldn't return us as a
+  // peer. Skip self defensively - the ring shouldn't return us as a
   // replica when we're primary, but if the client routed an Insert to
   // a non-primary by mistake, we still want to push to the correct
   // successors and avoid a self-loop.
@@ -306,7 +306,7 @@ std::optional<KvBlock> Replicator::FetchFromAny(
 
   // Fan out: one std::async per peer calling transport_->Fetch. The
   // transport's Fetch returns a future, but for the GrpcStreamTransport
-  // case it's a ready future (sync-inside-call) — so the parallelism
+  // case it's a ready future (sync-inside-call) - so the parallelism
   // comes from our std::async layer, not the transport. An ibverbs
   // transport would return a truly-async future, and our wait loop
   // below handles both shapes identically.
@@ -358,13 +358,13 @@ void Replicator::TriggerReReplication(
     const std::vector<std::string>& lost_peers) {
   // Called by Membership::OnMembershipChange after a peer is declared dead
   // (and after Router::SetPeers has installed the new ring). We build the FULL
-  // candidate set — every block this node holds and is in-route for under the
-  // new ring — and hand it to the sweep as a "re-replication round."
+  // candidate set - every block this node holds and is in-route for under the
+  // new ring - and hand it to the sweep as a "re-replication round."
   // DrainReReplication then dispatches it in bounded, queue-back-pressured
   // batches across successive sweep ticks until the cursor reaches the end.
   //
   // Idempotent: the receiver's Insert dedups on BlockId, so re-pushing a block
-  // a peer already has is a no-op — safe to over-include (we don't know which
+  // a peer already has is a no-op - safe to over-include (we don't know which
   // blocks a surviving peer is missing without an ACK channel; adding one is a
   // deferred optimization).
   if (router_ == nullptr || transport_ == nullptr || store_ == nullptr) {
@@ -382,7 +382,7 @@ void Replicator::TriggerReReplication(
     return;
   }
 
-  // Scan ALL tiers (no cap — covering the whole working set is the point)
+  // Scan ALL tiers (no cap - covering the whole working set is the point)
   // and collect the IDs of blocks we hold and are in-route for. Snapshot
   // is shared-locked per BlockStore; we only read IDs here, the byte copy
   // happens lazily in DrainReReplication via TieredStore::Get.
@@ -458,7 +458,7 @@ void Replicator::DrainReReplication() {
 
     // Back-pressure: advance the cursor ONLY for blocks we can fully
     // enqueue. If the worker queue lacks room for all of this block's
-    // pushes, stop this tick and retry from the SAME cursor next tick —
+    // pushes, stop this tick and retry from the SAME cursor next tick -
     // this throttles the sweep to the worker drain rate and guarantees no
     // overflow-drop silently skips a block.
     {
@@ -489,10 +489,10 @@ void Replicator::DrainReReplication() {
   const std::size_t remaining =
       state->rerep_round.size() - state->rerep_cursor;
   if (state->rerep_cursor >= state->rerep_round.size()) {
-    // Round complete — every candidate dispatched. Zero the deficit gauge and
+    // Round complete - every candidate dispatched. Zero the deficit gauge and
     // record the dispatch-completion time: this feeds
     // lethe_failover_recovery_seconds, measuring detection→full-dispatch, the
-    // locally-observable recovery signal — ACK-confirmed R=2 lags by the queue
+    // locally-observable recovery signal - ACK-confirmed R=2 lags by the queue
     // drain, which the chaos suite measures behaviorally.
     state->rerep_active = false;
     if (metrics_ != nullptr) {

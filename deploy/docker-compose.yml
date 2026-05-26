@@ -15,7 +15,7 @@ x-lethe-base: &lethe-base
 
 services:
   # NOTE: the ENTRYPOINT is already /usr/local/bin/lethe_server, so the
-  # `command` is ARGS ONLY — do NOT repeat ./lethe_server (the W0 file
+  # `command` is ARGS ONLY - do NOT repeat ./lethe_server (the W0 file
   # did, which made argv[1]=node_id="./lethe_server" and the port parse
   # crash). Peers use main.cpp's --peers node@host:port,... format. Each
   # container binds metrics on 9090 in its own netns (mapped to host
@@ -65,7 +65,10 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     volumes:
-      - ./grafana:/etc/grafana/provisioning/dashboards:ro
+      # provisioning/ holds the datasource + dashboard-provider YAML;
+      # dashboards/ holds the dashboard JSON the provider loads.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "3000:3000"
     networks:

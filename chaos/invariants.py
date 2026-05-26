@@ -11,7 +11,7 @@ Why behavioral probing instead of Prometheus PromQL:
   * Prometheus scrapes every 5s (deploy/prometheus.yml). A 3.5s recovery
     budget cannot be measured at 5s resolution.
   * `lethe_replicas_under_target` is NOT a live "current under-replication"
-    gauge — replication.cpp sets it to the *dispatched count* on the last
+    gauge - replication.cpp sets it to the *dispatched count* on the last
     membership change and never clears it, so "wait until it hits 0" never
     fires.
   * `lethe_failover_recovery_seconds` is declared but has no call site, so
@@ -19,7 +19,7 @@ Why behavioral probing instead of Prometheus PromQL:
   The only metric we trust here is `lethe_cluster_epoch`, scraped directly
   off each node's /metrics (sub-second). Everything else is verified by
   *behavior*: insert a known corpus, then probe each surviving node with a
-  local-only Fetch (the server's Fetch handler is FetchLocal — no peer
+  local-only Fetch (the server's Fetch handler is FetchLocal - no peer
   recursion, so a hit means that node physically holds the bytes).
 
 The invariants:
@@ -91,7 +91,7 @@ BY_ID = {n.node_id: n for n in TOPOLOGY}
 # Budgets. Detection floor is dead_after=3000ms; the documented end-to-end
 # recovery target is 3.5s (3s detect + 500ms re-replicate). We assert a HARD
 # ceiling well above the target (clearly-broken => fail) and separately WARN
-# if the 3.5s target was missed — chasing the exact 3.5s edge is flaky.
+# if the 3.5s target was missed - chasing the exact 3.5s edge is flaky.
 # --------------------------------------------------------------------------
 REPLICATION_FACTOR = 2
 HEARTBEAT_MS = 200
@@ -108,7 +108,7 @@ DETECTION_BUDGET_MS = 4200  # epoch must bump within this of the kill
 # We therefore model the budget as detection + a flat drain envelope + slack,
 # with a tiny per-block hedge for sizes beyond the measured range. INV-3
 # asserts full reconvergence within this budget and FAILS only on genuine
-# non-convergence (residual > 0) — passing against measured reality.
+# non-convergence (residual > 0) - passing against measured reality.
 RECOVERY_DETECT_MS = 3000              # dead_after, size-independent
 RECOVERY_DRAIN_ENVELOPE_MS = 22000     # observed max drain (N<=2000), flat
 RECOVERY_PER_BLOCK_MS = 2              # hedge for N beyond the measured range
@@ -118,7 +118,7 @@ RECOVERY_SLACK_MS = 6000
 def recovery_budget_ms(n_blocks: int) -> float:
     """Recovery budget: detection + flat drain envelope + slack (+ a small
     per-block hedge). Recovery is empirically ~flat in N, so the budget is
-    too — the N term only guards working sets past the measured range."""
+    too - the N term only guards working sets past the measured range."""
     return (
         RECOVERY_DETECT_MS
         + RECOVERY_DRAIN_ENVELOPE_MS
@@ -143,7 +143,7 @@ PAYLOAD_LEN = 256
 def make_corpus(tag: str, n: int = CORPUS_SIZE) -> dict[bytes, bytes]:
     """Deterministic id -> payload map. Payload is derived from the id so a
     single returned byte string is enough to detect corruption (no need to
-    carry the original around — recompute and compare)."""
+    carry the original around - recompute and compare)."""
     corpus: dict[bytes, bytes] = {}
     for i in range(n):
         h = hashlib.sha256(f"{tag}-{i}".encode()).digest()  # 32 bytes
@@ -173,7 +173,7 @@ class ClusterProbe:
 
     # -- client management -------------------------------------------------
     def single(self, node: Node) -> LetheClient:
-        """A ring-free client pinned to one node — every RPC hits that node
+        """A ring-free client pinned to one node - every RPC hits that node
         directly (no peers => no HashRing => no routing). Lets us ask a
         single node 'do you physically hold this block'."""
         if node.client_addr not in self._single:
@@ -214,7 +214,7 @@ class ClusterProbe:
         and there is no other successor to push to. ReplicateOut itself flags
         insert-to-non-primary as the 'by mistake' path. A chaos suite that
         asserts 'no data loss on any single death' needs a genuine R=2 baseline,
-        so we route inserts to the primary (the system's intended usage) — this
+        so we route inserts to the primary (the system's intended usage) - this
         is a load-pattern choice, not a change to routing/replication."""
         ring = HashRing([n.node_id for n in self.topology])
         groups: dict[str, list[tuple[BlockId, bytes]]] = {}
@@ -285,13 +285,13 @@ class ClusterProbe:
         return self._scrape_gauge(node, "lethe_cluster_epoch")
 
     def scrape_under_target(self, node: Node) -> Optional[int]:
-        # A live deficit (round.size - cursor), zeroed on reconvergence —
+        # A live deficit (round.size - cursor), zeroed on reconvergence -
         # usable as a cheap convergence signal.
         return self._scrape_gauge(node, "lethe_replicas_under_target")
 
     def sample_probe(self, corpus: dict[bytes, bytes], alive: list[Node],
                      k: int = 50) -> ReplicaState:
-        """probe_replicas over an evenly-spaced k-sample of the corpus —
+        """probe_replicas over an evenly-spaced k-sample of the corpus -
         cheap enough to poll convergence at large N without N*nodes fetches."""
         items = list(corpus.items())
         step = max(1, len(items) // k)
@@ -321,7 +321,7 @@ class ScenarioResult:
         tag = "PASS" if ok else "FAIL"
         if ok and warn:
             tag = "WARN"
-        print(f"  [{self.scenario}] {inv}: {tag} — {detail}", flush=True)
+        print(f"  [{self.scenario}] {inv}: {tag} - {detail}", flush=True)
 
     @property
     def failed(self) -> list[str]:
@@ -344,7 +344,7 @@ def _wait_node_ready(probe: ClusterProbe, node: Node, timeout_s: float = 30) -> 
         try:
             probe.single(node).lookup([BlockId(hash=b"\x00" * 32)], request_id="ping")
             return True
-        except Exception:  # noqa: BLE001 — readiness poll, any error => retry
+        except Exception:  # noqa: BLE001 - readiness poll, any error => retry
             pass
         time.sleep(0.25)
     return False
@@ -361,13 +361,13 @@ def _restore_cluster(probe: ClusterProbe) -> None:
             pass
         try:
             netem_clear(n.container)
-        except Exception:  # noqa: BLE001 — no qdisc present is fine
+        except Exception:  # noqa: BLE001 - no qdisc present is fine
             pass
     for i in range(len(TOPOLOGY)):
         for j in range(i + 1, len(TOPOLOGY)):
             try:
                 partition_heal(TOPOLOGY[i].container, TOPOLOGY[j].container)
-            except Exception:  # noqa: BLE001 — rule absent is fine
+            except Exception:  # noqa: BLE001 - rule absent is fine
                 pass
 
 
@@ -496,7 +496,7 @@ def scenario_kill(
         res.add(
             "INV-3",
             False,
-            f"did NOT reconverge to R={target} within {budget_ms:.0f}ms — "
+            f"did NOT reconverge to R={target} within {budget_ms:.0f}ms - "
             f"{last_residual}/{len(corpus)} block(s) still at R<{target} "
             "(non-convergence)",
         )
@@ -660,14 +660,14 @@ def scenario_pause(probe: ClusterProbe) -> ScenarioResult:
 # Scenario: network partition (node1 <-X-> node2; node0 reaches both).
 #
 # Under the no-consensus design the two isolated sides each mark the other
-# dead and drop it from their ring — DIVERGENT VIEWS ARE EXPECTED, not a bug.
+# dead and drop it from their ring - DIVERGENT VIEWS ARE EXPECTED, not a bug.
 # A bridged partition like this moves NO data (no inserts during it), so it
 # cannot lose redundancy or corrupt: writes are content-addressed, so even
 # divergent routing can never produce conflicting bytes for a BlockId. The
 # honest, falsifiable assertions are therefore:
 #   INV-1  no data loss (every block stays retrievable from the host),
 #   INV-6  no corruption,
-#   INV-3  membership RECOVERS — after heal both isolated sides detect the
+#   INV-3  membership RECOVERS - after heal both isolated sides detect the
 #          peer's return (a further epoch advance = resurrection), and the
 #          bridging node (node0) never churns its view.
 # "Reconverge to R=2" is NOT the right post-condition here: nothing dropped
@@ -781,7 +781,7 @@ def scenario_partition(probe: ClusterProbe) -> ScenarioResult:
 
 
 # --------------------------------------------------------------------------
-# Scenario: packet loss on one node. 5% is TOLERATED — the node must NOT be
+# Scenario: packet loss on one node. 5% is TOLERATED - the node must NOT be
 # falsely declared dead (15 missed heartbeats over dead_after; P(all lost) is
 # negligible at 5%), and the load path must stay alive with no corruption.
 # 30% (heavy, opt-in) MAY kill the node; there death is acceptable and we only
@@ -909,7 +909,7 @@ def scenario_large(probe: ClusterProbe) -> ScenarioResult:
         if smp.corrupt:
             corruption = True
         if smp.min_holders >= target:
-            # Sample looks converged — confirm against the FULL corpus.
+            # Sample looks converged - confirm against the FULL corpus.
             full = probe.probe_replicas(corpus, survivors)
             if full.corrupt:
                 corruption = True
@@ -982,7 +982,7 @@ def main() -> None:
     # The ring-free probe clients have no peer map, so a survivor's RemoteHit
     # to another live node logs a "source_node unknown to client" warning per
     # block. That's benign here (we read source_node directly off .hits), but
-    # it floods the suite output — quiet it to ERROR.
+    # it floods the suite output - quiet it to ERROR.
     logging.getLogger("lethe_client.client").setLevel(logging.ERROR)
 
     ap = argparse.ArgumentParser(description="Lethe chaos invariant checker")

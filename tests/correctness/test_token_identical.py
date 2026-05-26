@@ -9,17 +9,17 @@ cache.
 Four runs (separate subprocesses so process-global engine state can't
 leak between them); the lethe_server is shared between B and C:
 
-  A. vanilla        — no connector, prefix cache OFF. Cache-MISS side.
-  B. connector cold — fresh lethe_server; stores P's KV. MISS side.
-  C. connector warm — same lethe_server; LOADS P's KV from Lethe. HIT side.
-  D. native warm    — vLLM's own prefix cache, warmed. HIT side.
+  A. vanilla        - no connector, prefix cache OFF. Cache-MISS side.
+  B. connector cold - fresh lethe_server; stores P's KV. MISS side.
+  C. connector warm - same lethe_server; LOADS P's KV from Lethe. HIT side.
+  D. native warm    - vLLM's own prefix cache, warmed. HIT side.
 
 Gates:
   * STORE path (HARD): A == B. Both miss-side; the connector's save
     must not corrupt the computed result.
   * LOAD path (INFORMATIONAL): C vs D logged, not asserted. This
     separate-process model can't cleanly reproduce the
-    apples-to-apples comparison — run C loads the prefix in a SINGLE
+    apples-to-apples comparison - run C loads the prefix in a SINGLE
     fused generate (Lethe-hit) while run D warms its own cache in a
     SEPARATE generate then decodes (two-phase, native-hit). That
     generate-structure mismatch re-introduces FP drift on the
@@ -198,7 +198,7 @@ def test_token_identical_three_way_control():
         }
 
         # Run C: connector + SAME lethe_server, now warm. The connector
-        # LOADS P's KV from Lethe — cache-HIT side. (Before the
+        # LOADS P's KV from Lethe - cache-HIT side. (Before the
         # presence-marker fix this load never fired; the test was a
         # false green comparing three miss-side recomputes.)
         print(f"=== run C (connector warm @ {addr}, LOADS from Lethe) ===",
@@ -212,7 +212,7 @@ def test_token_identical_three_way_control():
         # vLLM's OWN cache. C==D is the gate: KV served by Lethe must
         # equal KV served by the native cache on the SAME hit schedule.
         # (Comparing C against vanilla A would cross the cache-hit/miss
-        # boundary, where output is NOT bit-identical — that boundary
+        # boundary, where output is NOT bit-identical - that boundary
         # FP drift is real and expected.)
         print("=== run D (native prefix cache warm, control) ===",
               flush=True)
@@ -285,7 +285,7 @@ def test_token_identical_three_way_control():
     # (Lethe-hit), while run D (native) must warm its own cache in a
     # SEPARATE generate then decode (two-phase, native-hit). That
     # generate-structure mismatch re-introduces non-associative-attention
-    # FP drift on the boundary-sensitive prompts — NOT a Lethe bug.
+    # FP drift on the boundary-sensitive prompts - NOT a Lethe bug.
     # test_disagg_token_identical does the structurally-matched
     # comparison (disagg vs native, both two-phase, same process) and is
     # the authoritative load-path gate. So here we only log C!=D; we do
@@ -299,11 +299,11 @@ def test_token_identical_three_way_control():
 
     # The HARD gate is the STORE path: vanilla (cache-miss) must equal
     # connector-cold (cache-miss). A divergence here means the
-    # connector's save path corrupts the computed result — a real bug.
+    # connector's save path corrupts the computed result - a real bug.
     if store_diverged:
         lines = ["Token-identical STORE gate FAILED."]
         lines.append(
-            f"  vanilla != connector-cold on prompts {store_diverged} — "
+            f"  vanilla != connector-cold on prompts {store_diverged} - "
             f"the connector's save path corrupts the miss-side result.")
         for entry in per_prompt:
             lines.append(

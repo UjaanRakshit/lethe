@@ -1,5 +1,5 @@
 #pragma once
-// Lethe — thin BLAKE3 helper around the vendored C reference impl
+// Lethe - thin BLAKE3 helper around the vendored C reference impl
 // at cache_server/third_party/blake3/. Hides the C struct dance so
 // the rest of the codebase says blake3_full(bytes) → Hash256.
 //

@@ -21,7 +21,7 @@ try:
 except ImportError as e:  # pragma: no cover
     raise ImportError(
         "blake3 is required for cross-language hash compatibility with "
-        "the C++ cache server — install with `pip install blake3`. "
+        "the C++ cache server - install with `pip install blake3`. "
         "The previous SHA-256 fallback was removed deliberately because "
         "the two languages must produce identical digests for every "
         "`(prev_hash, tokens)` and every `f\"{peer}#{vn}\"` ring key; "

@@ -7,12 +7,10 @@
 // Both sit behind the abstract KvTransport interface defined here.
 //
 // Concrete implementations:
-//   - GrpcStreamTransport (always available; default when LETHE_ENABLE_RDMA
-//     is OFF or RdmaIsAvailable() returns false).
-//   - IbverbsTransport (ibverbs / SoftRoCE; built only when
-//     LETHE_ENABLE_RDMA=ON). Queue pair per peer, established lazily on
-//     first Send; pinned buffer pool per peer for sends, shared pool for
-//     receives.
+//   - GrpcStreamTransport (always available; the default).
+//   - IbverbsTransport (ibverbs/RDMA; built only when LETHE_ENABLE_RDMA=ON
+//     and selected at runtime by LETHE_USE_RDMA). One RC queue pair per peer,
+//     dialed lazily on first Send; registered buffer pool per connection.
 //
 // The interface is implementation-agnostic so that swapping the data path
 // is a constructor change in main.cpp.
@@ -81,7 +79,7 @@ class KvTransport {
   // Fetch a single block from a peer by id. Returns the materialized block
   // on hit, nullopt on miss or RPC failure. Per-call deadline is the
   // implementation's choice (gRPC: 500ms; ibverbs: TBD when hardware
-  // arrives). Distinct from Send semantically — Fetch is request/response;
+  // arrives). Distinct from Send semantically - Fetch is request/response;
   // Send is fire-and-stage.
   virtual std::future<std::optional<KvBlock>> Fetch(
       const std::string& peer_id, BlockId id) = 0;
@@ -90,7 +88,7 @@ class KvTransport {
 // gRPC bidi-stream transport. Always available. Default when RDMA is off,
 // and currently the actual data path. Send invokes Insert RPCs (replication
 // push); Fetch invokes the Fetch RPC. Both run synchronously inside the call
-// and return a ready future — true async dispatch happens at the
+// and return a ready future - true async dispatch happens at the
 // Replicator's worker-pool layer above us. gRPC is the data path despite
 // the "RDMA for KV transfer" wording in DESIGN.md §6.
 class GrpcStreamTransport : public KvTransport {
@@ -137,8 +135,5 @@ class IbverbsTransport : public KvTransport {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
-
-// Helper: query SoftRoCE availability. Used by main.cpp to gate RDMA path.
-bool RdmaIsAvailable(const std::string& device_name);
 
 }  // namespace lethe

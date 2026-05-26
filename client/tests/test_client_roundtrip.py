@@ -13,10 +13,10 @@ and verifies:
     Insert a different block → Fetch the first id again (B2) → assert
     B1 == B2 == payload. LookupResult::Entry::local_data owns its bytes
     outright and Fetch always returns a fresh copy, so this is a
-    trivially-satisfied invariant — kept as a regression guard against
+    trivially-satisfied invariant - kept as a regression guard against
     any future change that re-introduces borrows on the response path.
 
-Skips when the lethe_server binary can't be found — the build can't
+Skips when the lethe_server binary can't be found - the build can't
 be exercised on every dev box (Protobuf / gRPC C++ not installed), but
 the test will run on any properly-equipped CI node.
 """
@@ -115,7 +115,7 @@ def server():
 
 def _make_block_id(seed: int, layer: int = 0):
     """Deterministic 32-byte hash from a seed; uses SHA-256 here only
-    as a uniqueness source — real content hashing goes via
+    as a uniqueness source - real content hashing goes via
     `lethe_client.routing.chained_block_hash` (BLAKE3)."""
     from lethe_client.client import BlockId
     return BlockId(

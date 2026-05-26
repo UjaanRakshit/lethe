@@ -8,7 +8,7 @@ Three runs, separate subprocesses (isolated vLLM engines):
   NATIVE (control): vLLM's OWN prefix cache. enable_prefix_caching=True,
     no connector. Per prompt: a warm-up generate populates the native
     cache with P's prefix, then a decode generate HITS it. This puts
-    the prefix on the cache-HIT side of the boundary — the same
+    the prefix on the cache-HIT side of the boundary - the same
     schedule disagg runs on.
   DISAGG: LetheCacheConnector on, enable_prefix_caching=False. Per
     prompt: a PREFILL phase exports P's KV to Lethe, then a DECODE
@@ -32,7 +32,7 @@ Assertions:
   * token_ids_DISAGG[i] == token_ids_NATIVE[i] for all prompts (the
     gate). A mismatch fails the test.
   * For prompts with >= 2 whole prefix blocks, DISAGG's decode phase
-    reports decode_hit_tokens > 0 — proving Lethe SERVED the KV rather
+    reports decode_hit_tokens > 0 - proving Lethe SERVED the KV rather
     than vLLM recomputing (false-green guard).
 
 Diagnostics → tests/correctness/disagg_results.json.
@@ -206,7 +206,7 @@ def test_disagg_token_identical():
     diagnostics["disagg_matches_native"] = (len(diverged) == 0)
     diagnostics["note"] = (
         "Gate = DISAGG vs NATIVE (same cache-hit schedule). "
-        "diverged_vs_vanilla is informational — vanilla is full "
+        "diverged_vs_vanilla is informational - vanilla is full "
         "recompute (cache-MISS side of the boundary), where FP "
         "non-associativity legitimately drifts on some prompts."
     )
@@ -239,7 +239,7 @@ def test_disagg_token_identical():
               if e["decode_hit_tokens"] <= 0]
     assert not no_hit, (
         f"FALSE GREEN: prompts {no_hit} have >=2 prefix blocks but "
-        f"decode_hit_tokens==0 — vLLM recomputed instead of loading from "
+        f"decode_hit_tokens==0 - vLLM recomputed instead of loading from "
         f"Lethe. The token-identical pass would be meaningless. See "
         f"{RESULTS_PATH}."
     )

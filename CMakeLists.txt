@@ -23,7 +23,7 @@ find_package(Protobuf REQUIRED)
 
 # Two-path gRPC discovery. Prefer the upstream CMake CONFIG package
 # (provided by vcpkg, Conan, or a source build with -DgRPC_INSTALL=ON
-# — this is what PACE will have). Fall back to pkg-config for
+# - this is what PACE will have). Fall back to pkg-config for
 # Debian/Ubuntu system packages, whose `libgrpc++-dev` historically
 # ships no gRPCConfig.cmake. Both paths land on the same
 # `gRPC::grpc++` link target so downstream target_link_libraries calls
@@ -42,7 +42,7 @@ else()
                  "(version=${GRPCPP_VERSION})")
 endif()
 
-# Plugin discovery — works for both paths (apt installs to /usr/bin;
+# Plugin discovery - works for both paths (apt installs to /usr/bin;
 # source builds with -DgRPC_INSTALL install to the chosen prefix).
 find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin REQUIRED)
 message(STATUS "Lethe: grpc_cpp_plugin=${GRPC_CPP_PLUGIN_EXECUTABLE}")
@@ -74,7 +74,7 @@ add_custom_command(
 # can take a target-level dependency on it via add_dependencies(). Without
 # this, the OUTPUT files referenced from add_executable() across a
 # subdirectory boundary do not always get a build rule emitted into the
-# generated Makefile — the symptom is `gmake: *** No rule to make target
+# generated Makefile - the symptom is `gmake: *** No rule to make target
 # 'generated/lethe.pb.cc'` at build time. The add_custom_target binds the
 # rule into this directory's scope; add_dependencies() in the subdirectory
 # carries it across.

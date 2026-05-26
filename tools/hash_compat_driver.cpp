@@ -1,13 +1,13 @@
-// Hash compatibility driver — cross-language equivalence harness for
+// Hash compatibility driver - cross-language equivalence harness for
 // chained_block_hash. Reads lines from stdin in either of two formats and
 // prints the resulting 32-byte BLAKE3 digest as 64-char lowercase hex.
 //
 // Modes:
-//   default      — each line: "<prev_hash_hex> <token_id> <token_id> ..."
+//   default      - each line: "<prev_hash_hex> <token_id> <token_id> ..."
 //                  Computes BLAKE3(prev_bytes || pack<u32 LE>(tokens))
 //                  for one block; mirrors
 //                  lethe_client.routing.chained_block_hash.
-//   --mode=ring_key — each line: "<peer> <vn>"
+//   --mode=ring_key - each line: "<peer> <vn>"
 //                  Computes BLAKE3(f"{peer}#{vn}".encode("utf-8"));
 //                  mirrors lethe_client.routing.HashRing's per-vnode
 //                  digest. Used by the cross-language ring-key test.
@@ -100,7 +100,7 @@ int run_default_mode() {
 
 int run_ring_key_mode() {
   // Each input line: <peer> <vn>
-  // Emit BLAKE3(f"{peer}#{vn}".encode("utf-8")) hex — same key format
+  // Emit BLAKE3(f"{peer}#{vn}".encode("utf-8")) hex - same key format
   // as Python HashRing.set_peers.
   std::string line;
   while (std::getline(std::cin, line)) {

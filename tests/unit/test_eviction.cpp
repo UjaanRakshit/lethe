@@ -10,7 +10,7 @@
 //     there (no over-eviction).
 //   - Visited bit gives a second chance: an all-visited tier still
 //     converges (bits cleared on the first sweep, victims taken on the
-//     second) — the SIEVE convergence guarantee.
+//     second) - the SIEVE convergence guarantee.
 //   - Cross-tier demotion: DRAM victims land in SSD (not dropped) when
 //     SSD has space.
 //   - SSD eviction is a hard drop (no slower tier).
@@ -119,7 +119,7 @@ void TestAllVisitedStillConverges() {
   int survivors_checked = 0;
   for (int i = 0; i < 10; ++i) {
     if (store.Get(MakeId(i)).has_value()) {
-      // Get itself re-sets the visited bit — so check BEFORE Get. We
+      // Get itself re-sets the visited bit - so check BEFORE Get. We
       // can't, since Get is how we know it survived. Instead assert
       // the pass made progress, which the eviction count above does.
       ++survivors_checked;

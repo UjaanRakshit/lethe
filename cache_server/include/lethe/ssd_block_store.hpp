@@ -4,7 +4,7 @@
 // File-backed slot allocator on top of a single mmap'd region per node.
 // One 64 KiB slot per block (configurable); the slot header carries the
 // content hash + payload size + tier so we can rebuild the in-memory index
-// by scanning the file at startup. No fsync — a host crash loses
+// by scanning the file at startup. No fsync - a host crash loses
 // recently-written SSD blocks, which is acceptable: the source of truth is
 // the model weights, which can recompute.
 //
@@ -91,7 +91,7 @@ class SsdBlockStore {
 
   // Used bytes counts ONLY payload bytes of live blocks (consistent with
   // BlockStore::used_bytes). Capacity is the file size minus the
-  // overhead of slot headers — we expose what the upper tier can
+  // overhead of slot headers - we expose what the upper tier can
   // actually use.
   std::size_t capacity_bytes() const noexcept { return usable_bytes_; }
   std::size_t used_bytes() const noexcept;

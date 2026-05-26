@@ -1,5 +1,5 @@
 // LetheCache facade unit test. Covers the Insert/Lookup round-trip at the
-// facade layer (not the gRPC wire — that's in
+// facade layer (not the gRPC wire - that's in
 // tests/integration/test_client_roundtrip.py), single-node DRAM-only.
 // Asserts LocalHit on insert, Miss on lookup miss, correct hit/miss
 // counts, cluster_epoch()==0 when membership is null, and that
@@ -137,7 +137,7 @@ void TestLocalDataSpanCopyPattern() {
       result.entries[0].local_data.begin(),
       result.entries[0].local_data.end());
 
-  // Insert a different block — the most mutating call the facade exposes
+  // Insert a different block - the most mutating call the facade exposes
   // (no Erase in the public API). It must not invalidate the prior
   // block's data, per unordered_map's reference-stability-on-rehash
   // guarantee, so the captured bytes still match the original.

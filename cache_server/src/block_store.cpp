@@ -9,7 +9,7 @@
 // doesn't invalidate references on rehash, so concurrent Puts that grow the
 // map keep existing spans valid; Erase does invalidate. The only caller above
 // this layer is TieredStore::Get, which copies the span into an owned vector
-// before returning — so the lend/borrow window stays inside TieredStore.
+// before returning - so the lend/borrow window stays inside TieredStore.
 
 #include "lethe/block_store.hpp"
 

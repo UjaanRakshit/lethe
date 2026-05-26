@@ -9,7 +9,7 @@ This module runs a 1Hz background poll against any reachable peer's
 Heartbeat RPC, learns the current epoch + alive peer set, and atomically
 swaps the client's HashRing when the epoch changes. The poll interval
 intentionally matches `MembershipConfig::heartbeat_interval` (200ms) ×5
-so that worst-case staleness is one second — well inside the 3.5s
+so that worst-case staleness is one second - well inside the 3.5s
 recovery budget. The poll is failure-aware: it skips unreachable peers
 and falls back through alive → known → seed candidates.
 """
@@ -41,7 +41,7 @@ class PeerStatus:
 @dataclass
 class EpochSnapshot:
     """One server's reported view of cluster state. Mirror of C++
-    `HeartbeatReply` — `alive_peers` carries full PeerStatus, not bare
+    `HeartbeatReply` - `alive_peers` carries full PeerStatus, not bare
     node IDs, so the client can see who the server suspects without
     waiting for that node to be declared dead.
     """
@@ -51,7 +51,7 @@ class EpochSnapshot:
     alive_peers: list[PeerStatus] = field(default_factory=list)
 
 
-# Type alias for the heartbeat probe — injected so tests can fake it
+# Type alias for the heartbeat probe - injected so tests can fake it
 # without standing up real gRPC channels.
 HeartbeatProbe = Callable[[str], Optional[EpochSnapshot]]
 
@@ -126,7 +126,7 @@ class EpochWatcher:
             snap = self._probe_any_peer()
             if snap is not None:
                 self._apply_if_newer(snap)
-            # Sleep interruptible by stop() — never block past shutdown.
+            # Sleep interruptible by stop() - never block past shutdown.
             self._stop_evt.wait(self._poll_interval)
 
     def _probe_any_peer(self) -> Optional[EpochSnapshot]:
@@ -143,7 +143,7 @@ class EpochWatcher:
         for peer_id in candidate_ids:
             try:
                 snap = self._probe(peer_id)
-            except Exception as e:  # noqa: BLE001 — probe is foreign code
+            except Exception as e:  # noqa: BLE001 - probe is foreign code
                 logger.debug("epoch probe to %s failed: %s", peer_id, e)
                 continue
             if snap is not None:
@@ -165,7 +165,7 @@ class EpochWatcher:
             # ring until they're declared dead server-side, otherwise a
             # transient probe failure would cause cluster-wide reshuffles.
             ring_peers = [p.node_id for p in self._alive_peers]
-            # Swap, don't mutate — concurrent readers must see one or the
+            # Swap, don't mutate - concurrent readers must see one or the
             # other ring, never a half-built one.
             self._ring = HashRing(
                 peers=ring_peers,

@@ -1,7 +1,7 @@
 // Consistent-hash router.
 //
 // Implements the bit-compatibility contract with
-// client/lethe_client/routing.py — same hash function (BLAKE3), same
+// client/lethe_client/routing.py - same hash function (BLAKE3), same
 // virtual-node count (128 default), same per-vnode key format (`f"{peer}#{vn}"`
 // UTF-8 bytes), same uint64 derivation (first 8 bytes of digest,
 // little-endian). Cross-language equivalence is asserted by
@@ -54,7 +54,7 @@ Router::Router(std::string local_node_id,
 std::uint64_t Router::HashBlock(const BlockId& id) const {
   // First 8 bytes of the content hash; little-endian uint64. The
   // BLAKE3 digest is already cryptographically uniform, so any 8
-  // bytes are equally good — we pick the leading 8 to match the
+  // bytes are equally good - we pick the leading 8 to match the
   // Python client.
   std::uint64_t v = 0;
   std::memcpy(&v, id.hash.data(), sizeof(v));
@@ -63,7 +63,7 @@ std::uint64_t Router::HashBlock(const BlockId& id) const {
 
 std::uint64_t Router::HashVirtualNode(const std::string& peer,
                                        std::uint32_t vn) const {
-  // Key format: literal f-string f"{peer}#{vn}" UTF-8 — verified bit-for-bit
+  // Key format: literal f-string f"{peer}#{vn}" UTF-8 - verified bit-for-bit
   // against the Python HashRing's encoding. Changing this breaks the
   // cross-language invariant.
   std::string key;

@@ -3,7 +3,7 @@
 // exposes the small surface the gRPC service handlers call.
 //
 // Threading: all public methods are thread-safe. The facade holds no state
-// lock — each subsystem owns its own mutex, and a Cache method touching N
+// lock - each subsystem owns its own mutex, and a Cache method touching N
 // subsystems acquires their locks in declaration order.
 //
 // vLLM integration lives entirely in the Python-side connector
@@ -83,7 +83,7 @@ struct LookupResult {
 // Options for Insert. Default is async replication: the call returns once
 // the primary tier write completes; replica pushes happen on a background
 // thread and failures surface in `lethe_replicas_under_target`. Setting
-// `sync_replicate = true` blocks until R-1 replicas ACK (or timeout) — used
+// `sync_replicate = true` blocks until R-1 replicas ACK (or timeout) - used
 // only by tests and durability-critical chaos writes; the benchmark path is
 // async.
 struct InsertOptions {
@@ -139,7 +139,7 @@ class LetheCache {
 
   // -- Introspection (for tests + metrics) ----------------------------------
 
-  // Delegates to Membership — the membership epoch is the single source of
+  // Delegates to Membership - the membership epoch is the single source of
   // truth; the facade does not maintain its own copy.
   std::uint64_t cluster_epoch() const noexcept;
   const std::string& node_id() const noexcept { return cfg_.node_id; }

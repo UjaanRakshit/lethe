@@ -19,7 +19,7 @@ Test shape:
 
 Acceptance: median ≤ 3.5s. If borderline (3.5-5s): re-run more, decide
 on distribution. If >5s consistently the budget split is under threat
-and needs triage — do NOT silently widen dead_after to make the test
+and needs triage - do NOT silently widen dead_after to make the test
 pass.
 
 Subprocess lifecycle: spawn the orchestrator processes in a new
@@ -275,16 +275,16 @@ def test_failover_recovery_meets_budget():
         f"  convergence per cycle: {final_convergence}\n"
     )
 
-    # All cycles must converge fully — if even one cycle didn't reach
+    # All cycles must converge fully - if even one cycle didn't reach
     # NUM_BLOCKS, re-replication is broken, not borderline.
     for i, (converged, total) in enumerate(final_convergence):
         assert converged == total, (
             f"cycle {i}: only {converged}/{total} blocks converged within "
-            f"{MAX_WAIT_SECONDS}s — re-replication not draining"
+            f"{MAX_WAIT_SECONDS}s - re-replication not draining"
         )
 
     # The 3.5s budget itself. Median, not max, because environmental
-    # noise can spike a single cycle — measure with multiple samples.
+    # noise can spike a single cycle - measure with multiple samples.
     assert median_wall <= BUDGET_SECONDS, (
         f"recovery budget MISSED: median={median_wall:.3f}s vs "
         f"budget={BUDGET_SECONDS}s. This is information to triage, not "
